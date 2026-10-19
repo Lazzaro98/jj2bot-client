@@ -1,3 +1,7 @@
+param(
+    [string]$AssetDirectory,
+    [string]$NativeExecutable
+)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -9,9 +13,15 @@ $sources += @(Get-ChildItem -LiteralPath (Join-Path $root 'Properties') -Filter 
     ForEach-Object { $_.FullName })
 try {
     & $compiler /nologo "/out:$output" /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Configuration.dll `
-        $sources (Join-Path $PSScriptRoot 'HostingTests.cs')
+        $sources (Join-Path $PSScriptRoot 'StandaloneServerTests.cs') (Join-Path $PSScriptRoot 'StandaloneInteropTests.cs')
     if ($LASTEXITCODE -ne 0) { throw 'Hosting test compilation failed.' }
-    & $output
+    $testArguments = @()
+    if ($AssetDirectory) { $testArguments += $AssetDirectory }
+    if ($NativeExecutable) {
+        if (-not $AssetDirectory) { throw 'NativeExecutable requires AssetDirectory.' }
+        $testArguments += $NativeExecutable
+    }
+    & $output @testArguments
     if ($LASTEXITCODE -ne 0) { throw 'Hosting tests failed.' }
 }
 finally {

@@ -29,10 +29,10 @@ namespace Jj2.Properties
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("")]
-        public string GameExecutable
+        public string AssetDirectory
         {
-            get { return ((string)(this["GameExecutable"])); }
-            set { this["GameExecutable"] = value; }
+            get { return ((string)(this["AssetDirectory"])); }
+            set { this["AssetDirectory"] = value; }
         }
     }
 }

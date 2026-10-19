@@ -7,21 +7,17 @@ namespace Jj2
 {
     class HostServerForm : Form
     {
-        private readonly Jj2TextBox executableBox;
+        private readonly Jj2TextBox directoryBox;
         private readonly Jj2TextBox levelBox;
         private readonly Jj2TextBox nameBox;
-        private readonly ComboBox modeBox;
         private readonly NumericUpDown portBox;
         private readonly NumericUpDown playersBox;
-        private readonly CheckBox listBox;
-        private readonly string[] modes = { "capture", "battle", "coop", "race", "treasure" };
+        public Jj2ServerOptions Options { get; private set; }
 
-        public Jj2HostOptions Options { get; private set; }
-
-        public HostServerForm(string executable)
+        public HostServerForm(string directory)
         {
             Text = "Host a server";
-            ClientSize = new Size(570, 400);
+            ClientSize = new Size(570, 420);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterParent;
             MaximizeBox = false;
@@ -31,19 +27,20 @@ namespace Jj2
             ForeColor = Jj2Theme.TextPrimary;
             Font = Jj2Theme.FontBody;
 
-            executableBox = AddTextBox("JJ2/JJ2+ executable", 18, executable);
+            directoryBox = AddTextBox("Level and tileset folder (no game executable needed)", 18, directory);
             levelBox = AddTextBox("Level (.j2l)", 82, "");
-            executableBox.Width = levelBox.Width = 440;
+            directoryBox.Width = levelBox.Width = 440;
             Jj2Button browseGame = AddButton("Browse...", 466, 40, 86);
             browseGame.Click += delegate
             {
-                using (OpenFileDialog picker = new OpenFileDialog())
+                using (FolderBrowserDialog picker = new FolderBrowserDialog())
                 {
-                    picker.Title = "Select your JJ2/JJ2+ executable";
-                    picker.Filter = "JJ2 executable (*.exe)|*.exe";
+                    picker.Description = "Select the folder containing your JJ2 levels and tilesets";
+                    picker.SelectedPath = directoryBox.Inner.Text;
+                    picker.ShowNewFolderButton = false;
                     if (picker.ShowDialog(this) == DialogResult.OK)
                     {
-                        executableBox.Inner.Text = picker.FileName;
+                        directoryBox.Inner.Text = picker.SelectedPath;
                         levelBox.Inner.Text = "";
                         SelectDefaultLevel();
                     }
@@ -54,41 +51,36 @@ namespace Jj2
             {
                 using (OpenFileDialog picker = new OpenFileDialog())
                 {
-                    picker.Title = "Select a level inside your game's folder";
+                    picker.Title = "Select the level to host";
                     picker.Filter = "JJ2 levels (*.j2l)|*.j2l";
-                    if (File.Exists(executableBox.Inner.Text))
-                        picker.InitialDirectory = Path.GetDirectoryName(executableBox.Inner.Text);
+                    if (Directory.Exists(directoryBox.Inner.Text))
+                        picker.InitialDirectory = directoryBox.Inner.Text;
                     if (picker.ShowDialog(this) == DialogResult.OK) levelBox.Inner.Text = picker.FileName;
                 }
             };
             nameBox = AddTextBox("Server name", 146, "JJ2 Bot Server");
             nameBox.Inner.MaxLength = 30;
 
-            AddLabel("Game mode", 18, 210);
-            modeBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList,
-                Location = new Point(18, 232), Size = new Size(240, 26) };
-            modeBox.Items.AddRange(new object[] { "Capture the Flag", "Battle", "Cooperative", "Race", "Treasure Hunt" });
-            modeBox.SelectedIndex = 0;
-            Controls.Add(modeBox);
+            AddLabel("Mode", 18, 210);
+            AddLabel("Sandbox (Battle protocol)", 18, 234);
             AddLabel("Port (TCP + UDP)", 278, 210);
             portBox = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = 10052,
                 Location = new Point(278, 232), Width = 130 };
             Controls.Add(portBox);
             AddLabel("Max players", 430, 210);
-            playersBox = new NumericUpDown { Minimum = 2, Maximum = 32, Value = 8,
+            playersBox = new NumericUpDown { Minimum = 2, Maximum = 31, Value = 8,
                 Location = new Point(430, 232), Width = 122 };
             Controls.Add(playersBox);
 
-            listBox = new CheckBox { Text = "Publish on the public server list", AutoSize = true,
-                Location = new Point(18, 272) };
-            Controls.Add(listBox);
-            Label notice = AddLabel("Friends need your IP and port. Internet hosting may require router port\n" +
-                "forwarding and firewall access for both TCP and UDP. JJ2+ is recommended.", 18, 302);
+            Label notice = AddLabel("Standalone JJ2+ networking sandbox: join, map downloads, chat and movement.\n" +
+                "Combat, pickups, CTF scoring, AngelScript and public listing are not implemented.\n\n" +
+                "Use trusted LAN/VPN peers: passwords are not supported.\n" +
+                "Allow the TCP + UDP port in your firewall. No Jazz2.exe is started.", 18, 278);
             notice.Font = Jj2Theme.FontSmall;
             notice.ForeColor = Jj2Theme.TextSecondary;
-            Jj2Button cancel = AddButton("Cancel", 310, 352, 110);
+            Jj2Button cancel = AddButton("Cancel", 310, 372, 110);
             cancel.DialogResult = DialogResult.Cancel;
-            Jj2Button host = AddButton("Start server", 430, 352, 122);
+            Jj2Button host = AddButton("Start server", 430, 372, 122);
             host.Style = Jj2Button.ButtonStyle.Accent;
             host.Click += Start_Click;
             CancelButton = cancel;
@@ -98,8 +90,8 @@ namespace Jj2
 
         private void SelectDefaultLevel()
         {
-            if (!File.Exists(executableBox.Inner.Text)) return;
-            string level = Path.Combine(Path.GetDirectoryName(executableBox.Inner.Text), "bbswing.j2l");
+            if (!Directory.Exists(directoryBox.Inner.Text)) return;
+            string level = Path.Combine(directoryBox.Inner.Text, "bbswing.j2l");
             if (File.Exists(level)) levelBox.Inner.Text = level;
         }
 
@@ -129,23 +121,21 @@ namespace Jj2
 
         private void Start_Click(object sender, EventArgs e)
         {
-            Options = new Jj2HostOptions
+            Options = new Jj2ServerOptions
             {
-                ExecutablePath = executableBox.Inner.Text.Trim(),
+                AssetDirectory = directoryBox.Inner.Text.Trim(),
                 LevelPath = levelBox.Inner.Text.Trim(),
                 ServerName = nameBox.Inner.Text.Trim(),
-                Mode = modes[modeBox.SelectedIndex],
                 Port = (int)portBox.Value,
-                MaxPlayers = (int)playersBox.Value,
-                ListPublicly = listBox.Checked
+                MaxPlayers = (int)playersBox.Value
             };
             try
             {
-                Jj2HostLauncher.CreateStartInfo(Options);
-                Jj2HostLauncher.EnsurePortAvailable(Options.Port);
+                Options.Validate();
                 DialogResult = DialogResult.OK;
             }
             catch (ArgumentException ex) { ShowError(ex.Message); }
+            catch (InvalidDataException ex) { ShowError(ex.Message); }
             catch (IOException ex) { ShowError(ex.Message); }
             catch (UnauthorizedAccessException ex) { ShowError(ex.Message); }
             catch (System.Net.NetworkInformation.NetworkInformationException ex) { ShowError(ex.Message); }

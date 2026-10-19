@@ -197,7 +197,11 @@ namespace Jj2
 
         internal static string ReadTilesetName(string levelPath)
         {
-            byte[] data = File.ReadAllBytes(levelPath);
+            return ReadTilesetName(File.ReadAllBytes(levelPath));
+        }
+
+        internal static string ReadTilesetName(byte[] data)
+        {
             byte[][] streams = ReadStreams(data);
             Reader info = new Reader(streams[0]);
             info.Skip(19 + 32);

@@ -27,33 +27,52 @@ included; use your existing JJ2 installation and the server download support.
 ## Host a server
 
 Click **Host a server** next to the character picker in the server browser.
-Select your installed JJ2/JJ2+ executable and a `.j2l` level inside that game's
-folder (the level filename and relative subfolders must not contain spaces,
-because JJ2 does not accept a quoted level argument). Choose Capture the Flag,
-Battle, Cooperative, Race or Treasure Hunt,
-the server name, TCP/UDP port and player limit, then click **Start server**.
-JJ2+ is recommended; the launcher uses its documented server command-line options.
-The executable path is remembered locally and its folder is also used for client
-map loading and downloads. If present, `bbswing.j2l` is preselected.
+Select a folder containing your JJ2 levels and tilesets, a `.j2l` level, the
+server name, TCP/UDP port and player limit, then click **Start server**.
+This starts **our own TCP/UDP server inside the client application**.
+It does not launch or depend on `Jazz2.exe`; only the level and tileset files
+are needed. The asset folder is remembered locally.
 
-This starts the actual game as a windowed server, not a standalone server
-implementation. Existing game settings still apply. The browser waits for both
-TCP and UDP listeners before displaying **Join hosted server**, which connects
-this bot client to `127.0.0.1` on the chosen port. The host itself remains playable
-in JJ2. Close that game instance to stop hosting; closing the bot client does not
-terminate the game. Startup failures and occupied ports are reported explicitly.
+The server window displays connected player counts and a live log.
+**Join server** connects our bot client to `127.0.0.1` on the configured port.
+Native JJ2+ clients can connect directly, for example:
 
-Servers are unlisted unless **Publish on the public server list** is checked.
-Unlisted is not password-protected: anyone who can reach your IP and port may
-connect. Use JJ2+'s server menu or `/password` and `/private` commands if needed.
-Friends on your LAN can connect using your LAN IP; internet players need your
-public IP and port, or the public server listing. Internet hosting may require
-firewall permission and router forwarding for **both TCP and UDP** on that port
-(default `10052`). The launcher does not change firewall/router settings or verify
-internet reachability.
+```powershell
+.\Jazz2.exe -connect 127.0.0.1:10052 -windowed
+```
 
-Run `powershell -File .\tests\RunHostingTests.ps1` for launch-argument, validation,
-port-conflict, readiness and UI regression checks.
+For another computer, replace `127.0.0.1` with the server computer's LAN/VPN IP.
+**Stop server**, closing the server window, or closing the application stops
+hosting, disconnects clients and releases both ports. No separate game process
+has to be closed.
+
+**This is an experimental networking sandbox using the Battle protocol, not
+a complete JJ2 server engine.** It implements native discovery, JJ2+ negotiation,
+single-player joins (up to 31 clients), roster updates, chat, spectator toggles,
+validated map/tileset downloads, keepalives, movement relay and visual blaster
+event relay. TCP control and UDP gameplay are handled by our server sockets.
+Downloads expose only immutable snapshots of the selected level and its tileset;
+arbitrary file requests are rejected.
+
+There is **no authoritative combat/damage, pickup synchronization, CTF flags or
+scoring, AngelScript, level cycling, password authentication, splitscreen or
+public-list registration**. Unsupported packets/commands are reported. Do not
+treat visible projectiles as implemented combat. Use trusted LAN/VPN peers;
+this prototype is not intended as a production internet server. The application
+does not change firewall/router settings. Access across NAT would require
+forwarding **both TCP and UDP** on the selected port (default `10052`).
+
+Run `powershell -File .\tests\RunHostingTests.ps1` for synthetic protocol,
+real-socket, download, chat, movement, lifecycle and UI checks. Optional
+interoperability checks use your own game assets and native JJ2+ as a *client*:
+
+```powershell
+.\tests\RunHostingTests.ps1 -AssetDirectory 'C:\games\Jazz2+' -NativeExecutable 'C:\games\Jazz2+\Jazz2.exe'
+```
+
+These checks host our standalone server, download its assets into a temporary
+bot cache, connect two actual bot clients and optionally connect a native JJ2+
+client. The native executable is not used to host the server.
 
 ## Map downloads
 

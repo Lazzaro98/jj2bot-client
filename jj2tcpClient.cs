@@ -644,15 +644,26 @@ namespace Jj2
                         }
 
                         byte pID = packet[p++];
-                        p += 2;//unknownData[2]
-                        byte pTeamAndChar = packet[p++];
+                        byte joinedCharacter, joinedTeam;
+                        if (isPlusServer)
+                        {
+                            joinedCharacter = (byte)(packet[p++] & 0x0F);
+                            joinedTeam = packet[p++];
+                        }
+                        else
+                        {
+                            p += 2;
+                            byte pTeamAndChar = packet[p++];
+                            joinedCharacter = (byte)(pTeamAndChar & 3);
+                            joinedTeam = (byte)((pTeamAndChar >> 4) & 1);
+                        }
                         int[] fur = { packet[p++], packet[p++], packet[p++], packet[p++] };
 
                         // The name is normally preceded by a fixed 5-byte filler, but (as with the 0x12
                         // player-list packet) some JJ2+ builds insert extra bytes here, shifting the name
                         // and sometimes landing on the terminator -> an empty parsed name. Search for the
                         // "0x11, pID" sub-record marker that always precedes the name, same as case 0x12.
-                        int fallbackNameStart = p + 5;
+                        int fallbackNameStart = p + (isPlusServer ? 7 : 5);
                         int nameStart = -1;
                         for (int i = p; i < packet.Length - 1; i++)
                         {
@@ -693,8 +704,8 @@ namespace Jj2
                         Player newp = new Player(ppname);
                         newp.sockID = ppsockID;
                         newp.playerID = pID;
-                        newp.pTeam = (pTeamAndChar & 16) / 16;
-                        newp.pchar = pTeamAndChar & 3;
+                        newp.pTeam = joinedTeam;
+                        newp.pchar = joinedCharacter;
                         newp.fur = fur;
                         newp.connected = true;
                         players[pID] = newp;

@@ -63,7 +63,9 @@
     <Compile Include="CharacterPicker.cs" />
     <Compile Include="PasswordPromptForm.cs" />
     <Compile Include="HostServerForm.cs" />
-    <Compile Include="Jj2HostLauncher.cs" />
+    <Compile Include="HostedServerForm.cs" />
+    <Compile Include="Jj2StandaloneServer.cs" />
+    <Compile Include="Jj2ServerPackets.cs" />
     <Compile Include="Jj2Models.cs" />
     <Compile Include="JjBotBody.cs" />
     <Compile Include="MapForm.cs" />

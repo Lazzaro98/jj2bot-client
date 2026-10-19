@@ -4,7 +4,7 @@
     <Profile Name="(Default)" />
   </Profiles>
   <Settings>
-    <Setting Name="GameExecutable" Type="System.String" Scope="User">
+    <Setting Name="AssetDirectory" Type="System.String" Scope="User">
       <Value Profile="(Default)" />
     </Setting>
   </Settings>
