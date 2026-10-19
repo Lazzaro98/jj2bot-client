@@ -26,5 +26,13 @@ namespace Jj2.Properties
                 return defaultInstance;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string GameExecutable
+        {
+            get { return ((string)(this["GameExecutable"])); }
+            set { this["GameExecutable"] = value; }
+        }
     }
 }

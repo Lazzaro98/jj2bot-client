@@ -1,8 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Configuration;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.IO;
 using System.Windows.Forms;
 
 namespace Jj2
@@ -16,6 +19,22 @@ namespace Jj2
         {
             InitializeComponent();
             ApplyTheme();
+            try
+            {
+                gameExecutable = Properties.Settings.Default.GameExecutable;
+                if (File.Exists(gameExecutable))
+                    jj2udpClient.GameDirectory = Path.GetDirectoryName(gameExecutable);
+            }
+            catch (ConfigurationErrorsException ex)
+            {
+                MessageBox.Show(this, "Unable to load the saved game path: " + ex.Message,
+                    "Game settings error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            FormClosed += delegate
+            {
+                if (hostTimer != null) hostTimer.Stop();
+                if (hostProcess != null) hostProcess.Dispose();
+            };
         }
 
         /// <summary>
@@ -115,6 +134,16 @@ namespace Jj2
             characterPicker.Location = new Point(left + characterLabel.Width + 14, characterRowTop);
             characterLabel.Location = new Point(left, characterRowTop + (characterPicker.Height - characterLabel.Height) / 2);
 
+            hostButton = new Jj2Button { Name = "hostServerButton", Text = "Host a server",
+                Style = Jj2Button.ButtonStyle.Outline, Size = new Size(140, 30),
+                Location = new Point(characterPicker.Right + 20, characterRowTop) };
+            hostButton.Click += HostServer_Click;
+            Controls.Add(hostButton);
+            hostStatusLabel = new Label { AutoSize = false, ForeColor = Jj2Theme.TextSecondary,
+                Font = Jj2Theme.FontSmall, Location = new Point(hostButton.Right + 12, characterRowTop + 6),
+                Size = new Size(300, 34), Text = "Host using your installed JJ2/JJ2+." };
+            Controls.Add(hostStatusLabel);
+
             serverListView.Location = new Point(left, characterRowTop + characterPicker.Height + 14);
             serverListView.Size = new Size(ClientSize.Width - left - right, ClientSize.Height - serverListView.Top - bottom);
             serverListView.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
@@ -125,6 +154,132 @@ namespace Jj2
 
         private CharacterPicker characterPicker;
         private ImageList rowHeightImageList;
+        private Jj2Button hostButton;
+        private Label hostStatusLabel;
+        private Process hostProcess;
+        private Timer hostTimer;
+        private DateTime hostStartedAt;
+        private int hostPort;
+        private bool hostReady;
+        private bool hostTimeoutReported;
+        private string gameExecutable;
+
+        private void HostServer_Click(object sender, EventArgs e)
+        {
+            if (hostProcess != null)
+            {
+                if (!hostProcess.HasExited)
+                {
+                    if (hostReady)
+                        ConnectToServer(new ListedServer { IpAddress = "127.0.0.1", Port = hostPort, Name = "Hosted server" });
+                    return;
+                }
+                hostTimer.Stop();
+                hostProcess.Dispose();
+                hostProcess = null;
+                hostButton.Text = "Host a server";
+            }
+            using (HostServerForm dialog = new HostServerForm(
+                String.IsNullOrEmpty(gameExecutable) ? Path.Combine(jj2udpClient.GameDirectory, "Jazz2.exe") : gameExecutable))
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    ProcessStartInfo startInfo = Jj2HostLauncher.CreateStartInfo(dialog.Options);
+                    Jj2HostLauncher.EnsurePortAvailable(dialog.Options.Port);
+                    hostProcess = Process.Start(startInfo);
+                    if (hostProcess == null) throw new InvalidOperationException("JJ2 did not return a game process.");
+                    gameExecutable = startInfo.FileName;
+                    jj2udpClient.GameDirectory = startInfo.WorkingDirectory;
+                    hostPort = dialog.Options.Port;
+                    hostReady = false;
+                    hostTimeoutReported = false;
+                    hostStartedAt = DateTime.UtcNow;
+                    hostButton.Enabled = false;
+                    hostStatusLabel.Text = "Starting JJ2 server on port " + hostPort + "...";
+                    if (hostTimer == null)
+                    {
+                        if (components == null) components = new Container();
+                        hostTimer = new Timer(components) { Interval = 500 };
+                        hostTimer.Tick += HostTimer_Tick;
+                    }
+                    hostTimer.Start();
+                }
+                catch (Win32Exception ex) { ShowHostError(ex.Message); return; }
+                catch (ArgumentException ex) { ShowHostError(ex.Message); return; }
+                catch (IOException ex) { ShowHostError(ex.Message); return; }
+                catch (UnauthorizedAccessException ex) { ShowHostError(ex.Message); return; }
+                catch (InvalidOperationException ex) { ShowHostError(ex.Message); return; }
+
+                try
+                {
+                    Properties.Settings.Default.GameExecutable = gameExecutable;
+                    Properties.Settings.Default.Save();
+                }
+                catch (ConfigurationErrorsException ex)
+                {
+                    MessageBox.Show(this, "JJ2 was launched, but its path could not be saved: " + ex.Message,
+                        "Game settings error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+        }
+
+        private void HostTimer_Tick(object sender, EventArgs e)
+        {
+            if (hostProcess.HasExited)
+            {
+                int exitCode = hostProcess.ExitCode;
+                hostTimer.Stop();
+                hostProcess.Dispose();
+                hostProcess = null;
+                hostButton.Enabled = true;
+                hostButton.Text = "Host a server";
+                hostStatusLabel.Text = "Hosted game closed (exit code " + exitCode + ").";
+                if (!hostReady) ShowHostError("JJ2 closed before the server was ready. Check the selected game and level.");
+                return;
+            }
+            try
+            {
+                if (Jj2HostLauncher.IsListening(hostPort))
+                {
+                    if (hostReady) return;
+                    hostReady = true;
+                    hostButton.Text = "Join hosted server";
+                    hostButton.Enabled = true;
+                    hostStatusLabel.Text = "Server listening on port " + hostPort + ".\nClose JJ2 to stop hosting.";
+                    return;
+                }
+                if (hostReady)
+                {
+                    hostReady = false;
+                    hostTimeoutReported = true;
+                    hostButton.Enabled = false;
+                    hostStatusLabel.Text = "Server stopped listening. Check JJ2.";
+                }
+            }
+            catch (System.Net.NetworkInformation.NetworkInformationException ex)
+            {
+                if (hostTimeoutReported) return;
+                hostTimeoutReported = true;
+                hostReady = false;
+                hostButton.Enabled = false;
+                hostStatusLabel.Text = "Unable to check startup. Check JJ2.";
+                ShowHostError("Unable to check server startup: " + ex.Message);
+                return;
+            }
+            if (!hostTimeoutReported && (DateTime.UtcNow - hostStartedAt).TotalSeconds >= 30)
+            {
+                hostTimeoutReported = true;
+                hostStatusLabel.Text = "Server startup not confirmed. Check JJ2.";
+                ShowHostError("JJ2 is running but both server ports are not listening. Check the game window for errors. " +
+                    "Close that JJ2 instance before trying again.");
+            }
+        }
+
+        private void ShowHostError(string message)
+        {
+            MessageBox.Show(this, message, "Hosting error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
 
         /// <summary>
         /// Swaps a stock Button for a themed Jj2Button with identical bounds, keeping the original's text.
@@ -412,6 +567,11 @@ namespace Jj2
                 server.Port = 10052;
                 server.Name = "Local server";
             }
+            ConnectToServer(server);
+        }
+
+        private void ConnectToServer(ListedServer server)
+        {
             string playerName = playerNameTextBox.Text.Trim();
             if (playerName.Length == 0)
             {

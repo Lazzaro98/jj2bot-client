@@ -24,6 +24,37 @@ local movement/physics, packet-capture proxy source and regression tests.
 Game levels, tilesets, downloaded caches, logs and compiled binaries are not
 included; use your existing JJ2 installation and the server download support.
 
+## Host a server
+
+Click **Host a server** next to the character picker in the server browser.
+Select your installed JJ2/JJ2+ executable and a `.j2l` level inside that game's
+folder (the level filename and relative subfolders must not contain spaces,
+because JJ2 does not accept a quoted level argument). Choose Capture the Flag,
+Battle, Cooperative, Race or Treasure Hunt,
+the server name, TCP/UDP port and player limit, then click **Start server**.
+JJ2+ is recommended; the launcher uses its documented server command-line options.
+The executable path is remembered locally and its folder is also used for client
+map loading and downloads. If present, `bbswing.j2l` is preselected.
+
+This starts the actual game as a windowed server, not a standalone server
+implementation. Existing game settings still apply. The browser waits for both
+TCP and UDP listeners before displaying **Join hosted server**, which connects
+this bot client to `127.0.0.1` on the chosen port. The host itself remains playable
+in JJ2. Close that game instance to stop hosting; closing the bot client does not
+terminate the game. Startup failures and occupied ports are reported explicitly.
+
+Servers are unlisted unless **Publish on the public server list** is checked.
+Unlisted is not password-protected: anyone who can reach your IP and port may
+connect. Use JJ2+'s server menu or `/password` and `/private` commands if needed.
+Friends on your LAN can connect using your LAN IP; internet players need your
+public IP and port, or the public server listing. Internet hosting may require
+firewall permission and router forwarding for **both TCP and UDP** on that port
+(default `10052`). The launcher does not change firewall/router settings or verify
+internet reachability.
+
+Run `powershell -File .\tests\RunHostingTests.ps1` for launch-argument, validation,
+port-conflict, readiness and UI regression checks.
+
 ## Map downloads
 
 The client checks the level and tileset against the CRC32 values in server details
