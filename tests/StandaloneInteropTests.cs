@@ -250,11 +250,37 @@ static class StandaloneInteropTests
             byte nativeId = (byte)nativePeer.GetType().GetField("Id").GetValue(nativePeer);
             Wait(delegate { return (bool)nativePeer.GetType().GetField("HudReady").GetValue(nativePeer); },
                 "Native Hot Potato HUD module did not initialize.", 8);
+            byte[] beforeDeath = NativePosition(nativePeer);
+            typeof(Jj2StandaloneServer).GetMethod("HandleTcp", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(server, new object[] { nativePeer, Jj2TcpPackets.CreateChatMessage(nativeId, "!respawn") });
+            Wait(delegate { return (bool)nativePeer.GetType().GetField("Respawning").GetValue(nativePeer); },
+                "Native voluntary respawn did not enter the death state.", 3);
+            Wait(delegate {
+                byte[] position = NativePosition(nativePeer);
+                return !(bool)nativePeer.GetType().GetField("Respawning").GetValue(nativePeer) &&
+                    position != null && (BitConverter.ToUInt16(position, 10) != BitConverter.ToUInt16(beforeDeath, 10) ||
+                    BitConverter.ToUInt16(position, 12) != BitConverter.ToUInt16(beforeDeath, 12));
+            }, "Native player did not become alive and visible again after death.", 10);
+            Wait(delegate {
+                foreach (RemotePlayer player in alpha.GetRemotePlayers())
+                    if (player.Key == nativeId && Math.Abs(player.X -
+                        (BitConverter.ToUInt16(NativePosition(nativePeer), 10) & 0x7FFF)) < 8) return true;
+                return false;
+            }, "Respawned native position did not reach another actual client.", 5);
+            CaptureNative(native, "native-hotpotato-respawned");
             HotPotatoRound round = (HotPotatoRound)typeof(Jj2StandaloneServer)
                 .GetField("hotPotato", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(server);
             server.ExecuteAdmin("/start");
             if (round.Holder != nativeId) throw new Exception("Injected random selector did not select the native player.");
             double firstDeadline = round.Deadline;
+            typeof(Jj2StandaloneServer).GetMethod("HandleTcp", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(server, new object[] { nativePeer, Jj2TcpPackets.CreateChatMessage(nativeId, "!respawn") });
+            Wait(delegate { return (bool)nativePeer.GetType().GetField("Respawning").GetValue(nativePeer); },
+                "Holder did not enter respawn.", 3);
+            Wait(delegate { return !(bool)nativePeer.GetType().GetField("Respawning").GetValue(nativePeer) &&
+                NativePosition(nativePeer) != null; }, "Holder did not return after death.", 10);
+            if (round.Deadline != firstDeadline || round.Holder != nativeId || round.RemainingPlayers != 3)
+                throw new Exception("Normal death reset the fuse or removed the holder from the round.");
             Stopwatch frames = Stopwatch.StartNew();
             while (frames.ElapsedMilliseconds < 2800) { Application.DoEvents(); Thread.Sleep(15); }
             CaptureNative(native, "native-hotpotato-local-holder");
@@ -321,7 +347,7 @@ static class StandaloneInteropTests
             if (native.HasExited) throw new Exception("Native Hot Potato client disconnected unexpectedly.");
             foreach (RemotePlayer player in alpha.GetRemotePlayers())
                 if (player.Key == alpha.Tcp.MyPlayerId) throw new Exception("Self marker created a duplicate bot avatar.");
-            Console.WriteLine("PASS: native JJ2+ Hot Potato HUD initialization, holder announcements, proximity transfer without fuse reset, two expiries, forced spectator, winner, restart and HUD loss without client-side elimination. Visual captures saved beside test runner for local/remote stars, native countdown and stale/reset HUD inspection.");
+            Console.WriteLine("PASS: native JJ2+ normal and holder respawn visibility without fuse reset, HUD initialization, proximity transfer, two expiries, spectator/winner/restart and HUD loss without client-side elimination.");
         }
         finally
         {

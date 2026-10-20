@@ -179,9 +179,7 @@ static class HotPotatoTests
                 Assert(hud[4] == 255 && BitConverter.ToUInt16(hud, 5) == 0,
                     "initialized client immediately receives inactive HUD state");
                 server.ExecuteAdmin("announcement-check");
-                string announcement = System.Text.Encoding.ASCII.GetString(a.Until(0x40));
-                if (!announcement.Contains("announcement-check"))
-                    announcement = System.Text.Encoding.ASCII.GetString(a.Until(0x40));
+                string announcement = a.ConsoleContaining("announcement-check");
                 Assert(announcement.Contains("announcement-check"), "admin announcement missing");
                 Move(a, 1, 100); Move(b, 1, 500);
                 server.ExecuteAdmin("/start");
@@ -208,10 +206,10 @@ static class HotPotatoTests
                 {
                     byte[] spec = late.Until(0x41);
                     while (spec.Length != 6 || spec[4] != late.Id) spec = late.Until(0x41);
-                    Assert(spec[5] == late.Id, "late player was not held in spectator mode");
+                    Assert(spec[5] != 0xFE, "late player was not held in spectator mode");
                     late.Send(Jj2TcpPackets.CreateSpectatorCommand(false));
                     byte[] denied = late.Until(0x41);
-                    Assert(denied[5] == late.Id, "late player escaped spectator restriction");
+                    Assert(denied[5] != 0xFE, "late player escaped spectator restriction");
                     late.Send(Jj2ServerPackets.Tcp(0x42, new byte[] { 0x22 }));
                     late.Send(Jj2TcpPackets.CreateChatMessage(late.Id, "/status"));
                     string status;
@@ -227,12 +225,104 @@ static class HotPotatoTests
                 }
                 b.Send(Jj2TcpPackets.CreateSpectatorCommand(true));
                 Wait(delegate { return server.ModeStatus.StartsWith("Winner: Alpha"); }, "spectating did not remove round participant");
+                Assert(Array.Find(server.GetPlayers(), delegate(HostedPlayerInfo p) { return p.Id == a.Id; }).Wins == 1,
+                    "winner did not receive exactly one session win");
+                b.Send(Jj2TcpPackets.CreateChatMessage(b.Id, "!play"));
+                Wait(delegate { return Array.Find(server.GetPlayers(), delegate(HostedPlayerInfo p) { return p.Id == b.Id; }).State == "Respawning"; },
+                    "spectator could not rejoin between finished rounds");
+                Move(b, 3, 500);
+                Wait(delegate { return Array.Find(server.GetPlayers(), delegate(HostedPlayerInfo p) { return p.Id == b.Id; }).State == "Lobby"; },
+                    "returning spectator never left the respawn state");
                 server.ExecuteAdmin("/not-a-command");
                 lock (logs) Assert(logs.Exists(delegate(string s) { return s.StartsWith("Unsupported admin command"); }), "unsupported command returned false success");
                 a.Dispose();
                 Wait(delegate { return server.PlayerCount == 1; }, "winner did not disconnect");
                 using (StandaloneServerTests.Client replacement = new StandaloneServerTests.Client(server.Port, "Replacement"))
                     Assert(server.ModeStatus.StartsWith("Winner: Alpha"), "reused player ID changed the recorded winner");
+            }
+        }
+        using (Jj2StandaloneServer server = new Jj2StandaloneServer(new Jj2ServerOptions {
+            AssetDirectory = directory, LevelPath = level, Port = FreePort(), MaxPlayers = 8,
+            ServerName = "Lifecycle and roster", HotPotato = true }, log))
+        {
+            server.Start();
+            using (StandaloneServerTests.Client a = new StandaloneServerTests.Client(server.Port, "Twin"))
+            using (StandaloneServerTests.Client b = new StandaloneServerTests.Client(server.Port, "twin"))
+            using (StandaloneServerTests.Client c = new StandaloneServerTests.Client(server.Port, "Twin2"))
+            using (StandaloneServerTests.Client d = new StandaloneServerTests.Client(server.Port, new string('L', 32)))
+            using (StandaloneServerTests.Client e = new StandaloneServerTests.Client(server.Port, new string('L', 32)))
+            {
+                HostedPlayerInfo[] roster = server.GetPlayers();
+                Assert(roster[0].Name == "Twin" && roster[1].Name == "twin2" && roster[2].Name == "Twin22",
+                    "case-insensitive suffix allocation did not avoid an existing suffixed name");
+                Assert(roster[3].Name.Length == 32 && roster[4].Name == new string('L', 31) + "2",
+                    "suffix allocation exceeded the native name limit");
+                b.ConsoleContaining("adjusted to twin2");
+                a.Send(Jj2ServerPackets.Tcp(0x57, new byte[] { 1, 1 }));
+                a.Until(0x56);
+                Move(a, 1, 100);
+                byte[] death = Jj2ServerPackets.Udp(8, 7, new byte[] { 4, 0, 0, 0, 0x0C, 0xF8, 0x1A, a.Id, 0xF1 });
+                a.Udp.Send(death, death.Length);
+                byte[] acknowledgement = b.ReceiveUdp(7);
+                Assert(acknowledgement[8] == 0x0F && acknowledgement[9] == a.Id,
+                    "native self-death did not reach other players");
+                Wait(delegate { return server.GetPlayers()[0].State == "Respawning"; }, "death was not tracked");
+                a.Send(Jj2ServerPackets.Tcp(0x57, new byte[] { 1, 1, 2, 1 }));
+                a.Send(Jj2TcpPackets.CreateChatMessage(a.Id, "!status"));
+                a.ConsoleContaining("Hot Potato ready");
+                Assert(server.GetPlayers()[0].State == "Respawning", "stale alive state skipped the actual death transition");
+                Move(a, 2, 110);
+                byte[] deadPosition = b.ReceiveUdp(2);
+                while ((deadPosition[6] >> 5) != 0) deadPosition = b.ReceiveUdp(2);
+                Assert((deadPosition[6] & 31) == a.Id, "dying player was relayed with full health");
+                a.Send(Jj2ServerPackets.Tcp(0x57, new byte[] { 1, 1, 2, 0 }));
+                a.Send(Jj2ServerPackets.Tcp(0x57, new byte[] { 1, 1, 2, 1 }));
+                Wait(delegate { return server.GetPlayers()[0].State == "Lobby"; }, "alive acknowledgement did not finish respawn");
+                Move(a, 3, 400);
+                byte[] revived = b.ReceiveUdp(2);
+                while ((revived[6] >> 5) == 0) revived = b.ReceiveUdp(2);
+                Assert((revived[6] & 31) == a.Id && BitConverter.ToUInt16(revived, 10) == 400,
+                    "respawned player did not become visible at the new position");
+                byte[] forgedDeath = (byte[])death.Clone();
+                forgedDeath[11] = b.Id;
+                jj2udpClient.CalculateUdpChecksum(forgedDeath);
+                a.Udp.Send(forgedDeath, forgedDeath.Length);
+                Wait(delegate {
+                    lock (logs) return logs.Exists(delegate(string line) { return line.Contains("unsupported UDP opcode/format 0x08"); });
+                }, "forged death was not rejected explicitly");
+                Assert(server.GetPlayers()[1].State == "Lobby", "a client killed a different player using a self-death request");
+                DateTime until = DateTime.UtcNow.AddMilliseconds(350);
+                bool echoedOwnPosition = false;
+                while (DateTime.UtcNow < until)
+                {
+                    if (a.Udp.Available > 0)
+                    {
+                        IPEndPoint ep = null;
+                        byte[] packet = a.Udp.Receive(ref ep);
+                        if (packet[2] == 2 && (packet[6] & 31) == a.Id) echoedOwnPosition = true;
+                    }
+                    Thread.Sleep(5);
+                }
+                Assert(!echoedOwnPosition, "server echoed fabricated local health and could interrupt native respawn");
+                b.Send(Jj2TcpPackets.CreateChatMessage(b.Id, "!spec"));
+                Wait(delegate { return server.GetPlayers()[1].State == "Spectating"; }, "chat spectator command failed");
+                b.Send(Jj2TcpPackets.CreateChatMessage(b.Id, "!watch " + a.Id));
+                Assert(b.ConsoleContaining("Following Twin").Contains("Following Twin"), "spectator follow command failed");
+                b.Send(Jj2ServerPackets.Tcp(0x42, new byte[] { 0xFE }));
+                b.Send(Jj2TcpPackets.CreateChatMessage(b.Id, "!play"));
+                Wait(delegate { return server.GetPlayers()[1].State == "Respawning"; }, "spectator did not leave camera mode");
+                Move(b, 1, 700);
+                Wait(delegate { return server.GetPlayers()[1].State == "Lobby"; }, "voluntary spectator could not return to play");
+                a.Send(Jj2TcpPackets.CreateChatMessage(a.Id, "!rules"));
+                Assert(a.ConsoleContaining("NEVER resets").Contains("15-second"), "players cannot discover round rules");
+                using (HostedServerForm hosted = new HostedServerForm(server, delegate { }))
+                {
+                    typeof(HostedServerForm).GetMethod("UpdateStatus",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(hosted, null);
+                    ListView list = (ListView)hosted.Controls.Find("hostedPlayers", true)[0];
+                    Assert(list.Items.Count == 5 && list.Items[b.Id.ToString()].SubItems[1].Text == "twin2",
+                        "server window does not show the live uniquely named roster");
+                }
             }
         }
         using (HostServerForm host = new HostServerForm(directory))

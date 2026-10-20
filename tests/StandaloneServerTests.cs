@@ -48,6 +48,15 @@ class StandaloneServerTests
             }
             throw new Exception("Missing TCP opcode " + opcode);
         }
+        public string ConsoleContaining(string text)
+        {
+            for (int i = 0; i < 30; i++)
+            {
+                string message = Encoding.ASCII.GetString(Until(0x40));
+                if (message.Contains(text)) return message;
+            }
+            throw new Exception("Missing console message: " + text);
+        }
         public byte[] ReceiveUdp(int opcode)
         {
             for (int i = 0; i < 20; i++)
@@ -250,7 +259,7 @@ class StandaloneServerTests
                     Assert(chat[start] == a.Id && Encoding.ASCII.GetString(chat, start + 2, chat.Length - start - 2) == "hello",
                         "Chat relay or server-owned sender identity failed.");
                     a.Send(Jj2TcpPackets.CreateChatMessage(a.Id, "/ready"));
-                    Assert(Encoding.ASCII.GetString(a.Until(0x40)).Contains("Unsupported player command"),
+                    Assert(a.ConsoleContaining("Unsupported player command").Contains("!help"),
                         "Unsupported server command did not report its limitation.");
                     Assert(Convert.ToBase64String(Download(a, "test level.j2l")) == Convert.ToBase64String(level),
                         "Level download differs from the served snapshot.");

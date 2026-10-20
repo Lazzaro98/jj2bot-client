@@ -165,9 +165,9 @@ namespace Jj2
             return Tcp(0x56, new byte[] { 1, 1, holder ?? (byte)255, (byte)ticks, (byte)(ticks >> 8) });
         }
 
-        public static byte[] Spectator(byte socketId, bool enabled)
+        public static byte[] Spectator(byte socketId, bool enabled, byte? target = null)
         {
-            return Tcp(0x41, new byte[] { 1, 0, socketId, enabled ? socketId : (byte)0xFE });
+            return Tcp(0x41, new byte[] { 1, 0, socketId, enabled ? (target ?? socketId) : (byte)0xFE });
         }
 
         public static byte[] Respawn(byte playerId, byte sequence)

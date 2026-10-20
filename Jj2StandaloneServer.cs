@@ -35,6 +35,14 @@ namespace Jj2
         }
     }
 
+    sealed class HostedPlayerInfo
+    {
+        public byte Id { get; internal set; }
+        public string Name { get; internal set; }
+        public string State { get; internal set; }
+        public int Wins { get; internal set; }
+    }
+
     // Networking sandbox, not an authoritative recreation of JJ2's combat or CTF engine.
     sealed class Jj2StandaloneServer : IDisposable
     {
@@ -49,6 +57,10 @@ namespace Jj2
             public bool Plus;
             public volatile bool Ready, Spectator;
             public bool RoundEliminated, RoundWaiting;
+            public bool Respawning;
+            public bool LastLifeAlive = true, RespawnSawDead;
+            public byte CameraTarget;
+            public int Wins;
             public volatile bool HudReady;
             public bool HudWarning;
             public double ReadyTime;
@@ -56,6 +68,7 @@ namespace Jj2
             public byte[] PendingRespawn;
             public double RespawnUntil;
             public string Name;
+            public string RequestedName;
             public long LastActivityTicks = DateTime.UtcNow.Ticks;
             public DateTime Accepted = DateTime.UtcNow;
             public int Requests;
@@ -81,6 +94,8 @@ namespace Jj2
         int udpSequence;
         DateTime lastPulse;
         string winnerName;
+        Peer winnerPeer;
+        int roundNumber, lastCountdown;
         readonly System.Diagnostics.Stopwatch uptime = new System.Diagnostics.Stopwatch();
 
         public int Port { get { return options.Port; } }
@@ -110,6 +125,26 @@ namespace Jj2
         public int PlayerCount
         {
             get { lock (sync) { int count = 0; foreach (Peer p in peers.Values) if (p.Record != null) count++; return count; } }
+        }
+
+        public HostedPlayerInfo[] GetPlayers()
+        {
+            lock (gameSync)
+            {
+                List<HostedPlayerInfo> result = new List<HostedPlayerInfo>();
+                foreach (Peer peer in Snapshot())
+                {
+                    if (peer.Record == null) continue;
+                    string state = !peer.Ready ? "Loading" : peer.RoundEliminated ? "Eliminated - next round" :
+                        peer.RoundWaiting ? "Waiting for next round" : peer.Spectator ? "Spectating" :
+                        peer.Respawning ? (hotPotato.Running && hotPotato.Holder == peer.Id ? "Respawning (potato)" : "Respawning") :
+                        hotPotato.Running && hotPotato.Holder == peer.Id ?
+                        "HOLDING POTATO" : winnerPeer == peer ? "Winner" : hotPotato.Running ? "Playing" : "Lobby";
+                    result.Add(new HostedPlayerInfo { Id = peer.Id, Name = peer.Name, State = state, Wins = peer.Wins });
+                }
+                result.Sort(delegate(HostedPlayerInfo a, HostedPlayerInfo b) { return a.Id.CompareTo(b.Id); });
+                return result.ToArray();
+            }
         }
 
         public Jj2StandaloneServer(Jj2ServerOptions options, Action<string> log, Func<int, int> chooseHolder = null)
@@ -254,13 +289,15 @@ namespace Jj2
                 peer.Tcp.Close();
                 if (peer.Record != null)
                 {
-                    log(peer.Name + " disconnected.");
+                    if (running) Announce("[Leave] " + peer.Name + " left the server.");
                     Broadcast(Jj2ServerPackets.Tcp(0x0D, new byte[] { 7, peer.Id, (byte)'2', (byte)'4', 32, 32 }, true), peer);
                 }
                 // Reserve the ID until the leave notification is sent, so a late
                 // disconnect cannot accidentally target a new client reusing it.
                 lock (gameSync)
                 {
+                    peer.Ready = false;
+                    peer.Position = null;
                     if (running && IsHotPotato)
                     {
                         List<HotPotatoPlayer> remaining = RoundPlayers(false);
@@ -268,6 +305,7 @@ namespace Jj2
                         ApplyChanges(hotPotato.Step(GameTime, remaining));
                     }
                     lock (sync) { peers.Remove(peer.Id); workers.Remove(Thread.CurrentThread); }
+                    RetargetSpectators();
                 }
                 if (running)
                 {
@@ -318,13 +356,31 @@ namespace Jj2
                         Send(peer, Jj2ServerPackets.ScriptList(peer.Challenge, assets[Jj2ServerPackets.HotPotatoModule]));
                     break;
                 case 0x57:
-                    if (!IsHotPotato || packet.Length - p != 2 || packet[p] != 1 || packet[p + 1] != 1)
+                    if (!IsHotPotato || packet.Length - p < 2 || packet[p] != 1 || packet[p + 1] != 1)
                         throw new InvalidDataException("Invalid Hot Potato HUD acknowledgement.");
                     lock (gameSync)
                     {
-                        peer.HudReady = true;
-                        log("Hot Potato HUD initialized for player " + peer.Id + ".");
-                        SendHud(peer);
+                        if (packet.Length - p == 2)
+                        {
+                            peer.HudReady = true;
+                            log("[HUD] Initialized for " + (peer.Name ?? ("player " + peer.Id)) + ".");
+                            SendHud(peer);
+                        }
+                        else if (packet.Length - p == 4 && peer.HudReady && peer.Ready &&
+                            packet[p + 2] == 2 && packet[p + 3] <= 1)
+                        {
+                            peer.LastLifeAlive = packet[p + 3] != 0;
+                            if (!peer.Spectator)
+                            {
+                                if (packet[p + 3] == 0)
+                                {
+                                    BeginRespawn(peer);
+                                    peer.RespawnSawDead = true;
+                                }
+                                else CompleteRespawn(peer);
+                            }
+                        }
+                        else throw new InvalidDataException("Invalid player lifecycle message.");
                     }
                     break;
                 case 0x0E:
@@ -333,6 +389,7 @@ namespace Jj2
                 case 0x1A:
                     if (peer.Record == null || packet.Length - p != 4 || !Equal(packet, p, peer.Challenge, 0, 4))
                         throw new InvalidDataException("Invalid ready challenge.");
+                    bool firstReady = !peer.Ready;
                     peer.ReadyTime = GameTime;
                     peer.Ready = true;
                     peer.Tcp.ReceiveTimeout = 0;
@@ -347,7 +404,12 @@ namespace Jj2
                     // The early initialization marker permits map loading; the post-load
                     // acknowledgement is also required before native players can spawn.
                     Send(peer, Jj2ServerPackets.Tcp(0x51, new byte[0]));
-                    Send(peer, Jj2ServerPackets.Console("Standalone sandbox: no damage, pickups, CTF scoring or arbitrary map scripts."));
+                    if (firstReady)
+                    {
+                        Send(peer, Jj2ServerPackets.Console("[Welcome] You are " + peer.Name + ". Type !help or !rules."));
+                        if (peer.Name != peer.RequestedName)
+                            Send(peer, Jj2ServerPackets.Console("[Name] Your requested name was adjusted to " + peer.Name + "."));
+                    }
                     if (IsHotPotato)
                     {
                         lock (gameSync)
@@ -361,6 +423,8 @@ namespace Jj2
                             SendHud(peer);
                         }
                     }
+                    if (firstReady) Announce("[Join] " + peer.Name +
+                        (peer.RoundWaiting ? " is watching until the next round." : " is ready to play."));
                     break;
                 case 0x15:
                     if (packet.Length - p < 2 || packet[p] != packet.Length - p - 1 ||
@@ -376,12 +440,8 @@ namespace Jj2
                     if (!peer.Ready || packet.Length - p < 2 || packet.Length - p > 514)
                         throw new InvalidDataException("Invalid chat packet.");
                     string text = Encoding.ASCII.GetString(packet, p + 2, packet.Length - p - 2).TrimEnd('\0');
-                    if (text == "/status")
-                        Send(peer, Jj2ServerPackets.Console(ModeStatus));
-                    else if (text == "/help")
-                        Send(peer, Jj2ServerPackets.Console("Player commands: /status, /help. Round controls are local-admin only."));
-                    else if (text.StartsWith("/", StringComparison.Ordinal))
-                        Send(peer, Jj2ServerPackets.Console("Unsupported player command. Try /help. Round controls are local-admin only."));
+                    if (text.StartsWith("/", StringComparison.Ordinal) || text.StartsWith("!", StringComparison.Ordinal))
+                        PlayerCommand(peer, text.Substring(1).Trim());
                     else
                     {
                         if (packet[p + 1] != 0)
@@ -398,6 +458,12 @@ namespace Jj2
                 case 0x42:
                     if (!peer.Ready || packet.Length - p != 1)
                         throw new InvalidDataException("Invalid spectator request: " + BitConverter.ToString(packet));
+                    if (packet[p] == 0xFE && peer.Spectator) break;
+                    if (packet[p] < 32 && peer.Spectator)
+                    {
+                        lock (gameSync) Watch(peer, packet[p]);
+                        break;
+                    }
                     if (packet[p] != 0x20 && packet[p] != 0x21)
                     {
                         ReportUnsupported(peer, 0x42, "TCP spectator request " + packet[p].ToString("X2"));
@@ -405,16 +471,7 @@ namespace Jj2
                     }
                     lock (gameSync)
                     {
-                        bool spectator = packet[p] == 0x21;
-                        if (IsHotPotato && !spectator && (peer.RoundEliminated || peer.RoundWaiting ||
-                            (hotPotato.Running && !hotPotato.Contains(peer.Id))))
-                        {
-                            Send(peer, Jj2ServerPackets.Spectator(peer.Id, true));
-                            Send(peer, Jj2ServerPackets.Console("Wait for the next Hot Potato round to rejoin."));
-                            break;
-                        }
-                        SetSpectator(peer, spectator);
-                        UpdateRound();
+                        RequestSpectator(peer, packet[p] == 0x21);
                     }
                     break;
                 default:
@@ -439,16 +496,29 @@ namespace Jj2
             if (nameStart < 0 || nameStart >= packet.Length - 1 || packet[packet.Length - 1] != 0 ||
                 packet.Length - nameStart > 33)
                 throw new InvalidDataException("Invalid player name.");
-            peer.Name = Encoding.ASCII.GetString(packet, nameStart, packet.Length - nameStart - 1);
-            foreach (char c in peer.Name)
+            string requestedName = Encoding.ASCII.GetString(packet, nameStart, packet.Length - nameStart - 1);
+            foreach (char c in requestedName)
                 if (c < 32 || c > 126) throw new InvalidDataException("Use a printable ASCII player name.");
-            byte[] name = Encoding.ASCII.GetBytes(peer.Name);
-            byte[] record = new byte[16 + name.Length];
-            record[0] = peer.Id; record[1] = peer.Id; record[2] = packet[p + 2]; record[3] = packet[p + 3];
-            Array.Copy(packet, p + 4, record, 4, 4);
-            record[8] = 0x11; record[9] = peer.Id; record[10] = 10; record[11] = 13;
-            Array.Copy(name, 0, record, 15, name.Length);
-            lock (sync) peer.Record = record;
+            byte[] record;
+            lock (gameSync)
+            {
+                peer.RequestedName = requestedName;
+                string baseName = requestedName.Replace("|", "").Trim();
+                if (baseName.Length == 0) baseName = "Player";
+                peer.Name = baseName;
+                for (int suffix = 2; NameExists(peer.Name); suffix++)
+                {
+                    string ending = suffix.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    peer.Name = baseName.Substring(0, Math.Min(baseName.Length, 32 - ending.Length)) + ending;
+                }
+                byte[] name = Encoding.ASCII.GetBytes(peer.Name);
+                record = new byte[16 + name.Length];
+                record[0] = peer.Id; record[1] = peer.Id; record[2] = packet[p + 2]; record[3] = packet[p + 3];
+                Array.Copy(packet, p + 4, record, 4, 4);
+                record[8] = 0x11; record[9] = peer.Id; record[10] = 10; record[11] = 13;
+                Array.Copy(name, 0, record, 15, name.Length);
+                lock (sync) peer.Record = record;
+            }
             Send(peer, Jj2ServerPackets.Tcp(0x5B, new byte[] { 0, 0 }));
             SendRoster(peer);
             // JJ2+ live joins use the same separate character/team fields as 0x12,
@@ -468,7 +538,140 @@ namespace Jj2
             spectatorState[1] = 32;
             Array.Copy(BitConverter.GetBytes(spectatorMask), 0, spectatorState, 2, 4);
             Send(peer, Jj2ServerPackets.Tcp(0x41, spectatorState));
-            log(peer.Name + " joined as player " + peer.Id + ".");
+            log("[Connect] " + peer.Name + " (#" + peer.Id + ") is loading the level.");
+        }
+
+        bool NameExists(string name)
+        {
+            foreach (Peer peer in Snapshot())
+                if (peer.Record != null && String.Equals(peer.Name, name, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        void PlayerCommand(Peer peer, string command)
+        {
+            string[] parts = command.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            string verb = parts.Length == 0 ? "" : parts[0].ToLowerInvariant();
+            lock (gameSync)
+            {
+                if (verb == "status" && parts.Length == 1) Send(peer, Jj2ServerPackets.Console(ModeStatus));
+                else if (verb == "help" && parts.Length == 1)
+                    Send(peer, Jj2ServerPackets.Console("!rules | !players | !status | !spec | !play | !watch ID | !respawn. Host starts rounds."));
+                else if (verb == "rules" && parts.Length == 1)
+                {
+                    Send(peer, Jj2ServerPackets.Console(IsHotPotato ?
+                        "[Rules] Touch another player to pass. The 15-second fuse NEVER resets on a pass." :
+                        "[Rules] Battle sandbox: movement/chat only; authoritative combat is not implemented."));
+                    if (IsHotPotato) Send(peer, Jj2ServerPackets.Console(
+                        "[Rules] Fuse expiry eliminates you. Normal death respawns you; your fuse keeps ticking."));
+                    if (IsHotPotato) Send(peer, Jj2ServerPackets.Console("[Rules] Last survivor wins. Late joins wait for the host's next round."));
+                }
+                else if (verb == "players" && parts.Length == 1)
+                    foreach (HostedPlayerInfo player in GetPlayers())
+                        Send(peer, Jj2ServerPackets.Console("#" + player.Id + " " + player.Name + " - " + player.State + " | wins: " + player.Wins));
+                else if ((verb == "spec" || verb == "spectate") && parts.Length == 1) RequestSpectator(peer, true);
+                else if (verb == "play" && parts.Length == 1) RequestSpectator(peer, false);
+                else if (verb == "respawn" && parts.Length == 1)
+                {
+                    if (peer.Spectator) Send(peer, Jj2ServerPackets.Console("[Respawn] You are spectating. Use !play between rounds."));
+                    else if (peer.Respawning) Send(peer, Jj2ServerPackets.Console("[Respawn] Already respawning; please wait."));
+                    else BeginRespawn(peer);
+                }
+                else if (verb == "watch" && parts.Length == 2)
+                {
+                    byte target;
+                    if (Byte.TryParse(parts[1], out target)) Watch(peer, target);
+                    else Send(peer, Jj2ServerPackets.Console("[Watch] Use !players, then !watch ID."));
+                }
+                else Send(peer, Jj2ServerPackets.Console("Unsupported player command. Try !help. Round controls are local-admin only."));
+            }
+        }
+
+        void RequestSpectator(Peer peer, bool enabled)
+        {
+            if (IsHotPotato && !enabled && hotPotato.Running &&
+                (peer.RoundEliminated || peer.RoundWaiting || !hotPotato.Contains(peer.Id)))
+            {
+                Send(peer, Jj2ServerPackets.Spectator(peer.Id, true, peer.CameraTarget));
+                Send(peer, Jj2ServerPackets.Console("[Round] Wait for the next Hot Potato round to rejoin."));
+                return;
+            }
+            bool changed = peer.Spectator != enabled;
+            peer.RoundEliminated = peer.RoundWaiting = false;
+            SetSpectator(peer, enabled);
+            if (changed) Announce("[Spectate] " + peer.Name + (enabled ? " is now watching. !play rejoins between rounds." : " is returning to play."));
+            UpdateRound();
+            RetargetSpectators();
+        }
+
+        void Watch(Peer viewer, byte targetId)
+        {
+            foreach (Peer target in Snapshot())
+                if (target.Id == targetId && target != viewer && target.Ready && !target.Spectator && !target.Respawning)
+                {
+                    if (!viewer.Spectator) RequestSpectator(viewer, true);
+                    viewer.CameraTarget = targetId;
+                    Broadcast(Jj2ServerPackets.Spectator(viewer.Id, true, targetId), null);
+                    Send(viewer, Jj2ServerPackets.Console("[Watch] Following " + target.Name + ". !watch ID changes target."));
+                    return;
+                }
+            Send(viewer, Jj2ServerPackets.Console("[Watch] That player is not available. Use !players."));
+        }
+
+        void RetargetSpectators()
+        {
+            Peer[] all = Snapshot();
+            foreach (Peer viewer in all)
+            {
+                if (!viewer.Ready || !viewer.Spectator) continue;
+                byte target = viewer.Id;
+                bool currentValid = false;
+                foreach (Peer candidate in all)
+                {
+                    if (!candidate.Ready || candidate.Spectator || candidate.Respawning) continue;
+                    if (target == viewer.Id) target = candidate.Id;
+                    if (candidate.Id == viewer.CameraTarget) currentValid = true;
+                }
+                if (!currentValid && viewer.CameraTarget != target)
+                {
+                    viewer.CameraTarget = target;
+                    Broadcast(Jj2ServerPackets.Spectator(viewer.Id, true, target), null);
+                }
+            }
+        }
+
+        void BeginRespawn(Peer peer)
+        {
+            if (!peer.Ready || peer.Respawning || peer.Spectator) return;
+            peer.Respawning = true;
+            peer.RespawnSawDead = !peer.LastLifeAlive;
+            peer.Position = null;
+            peer.PendingRespawn = null;
+            byte[] death = Jj2ServerPackets.Respawn(peer.Id, NextSequence());
+            foreach (Peer destination in Snapshot()) if (destination.Ready) SendUdp(destination, death);
+            Announce("[Respawn] " + peer.Name + " died and is respawning." +
+                (hotPotato.Running && hotPotato.Holder == peer.Id ? " The potato fuse keeps ticking!" : ""));
+            RetargetSpectators();
+        }
+
+        void CompleteRespawn(Peer peer)
+        {
+            if (!peer.Ready || !peer.Respawning || peer.Spectator || (peer.HudReady && !peer.RespawnSawDead)) return;
+            peer.Respawning = false;
+            peer.Position = null;
+            peer.PositionTime = 0;
+            peer.PendingRespawn = null;
+            BroadcastPlayerRecord(peer);
+            Announce("[Respawn] " + peer.Name + " is back in play.");
+            RetargetSpectators();
+        }
+
+        void BroadcastPlayerRecord(Peer peer)
+        {
+            byte[] roster = new byte[peer.Record.Length + 1];
+            roster[0] = 1;
+            Array.Copy(peer.Record, 0, roster, 1, peer.Record.Length);
+            Broadcast(Jj2ServerPackets.Tcp(0x12, roster), null);
         }
 
         void BroadcastClientStates()
@@ -489,23 +692,24 @@ namespace Jj2
             bool wasSpectator = peer.Spectator;
             if (wasSpectator == enabled)
             {
-                Broadcast(Jj2ServerPackets.Spectator(peer.Id, enabled), null);
+                Broadcast(Jj2ServerPackets.Spectator(peer.Id, enabled, peer.CameraTarget), null);
                 return;
             }
             peer.Spectator = enabled;
             peer.Position = null;
             peer.PendingRespawn = null;
-            Broadcast(Jj2ServerPackets.Spectator(peer.Id, enabled), null);
+            peer.Respawning = !enabled;
+            peer.RespawnSawDead = !peer.LastLifeAlive;
+            peer.CameraTarget = peer.Id;
+            Broadcast(Jj2ServerPackets.Spectator(peer.Id, enabled, peer.CameraTarget), null);
             if (wasSpectator && !enabled)
             {
                 peer.PendingRespawn = Jj2ServerPackets.Respawn(peer.Id, NextSequence());
                 peer.RespawnUntil = GameTime + 3;
                 SendUdp(peer, peer.PendingRespawn);
-                byte[] roster = new byte[peer.Record.Length + 1];
-                roster[0] = 1;
-                Array.Copy(peer.Record, 0, roster, 1, peer.Record.Length);
-                Broadcast(Jj2ServerPackets.Tcp(0x12, roster), null);
+                BroadcastPlayerRecord(peer);
             }
+            RetargetSpectators();
         }
 
         string PlayerName(byte? id)
@@ -523,7 +727,7 @@ namespace Jj2
                 if (!peer.Ready || peer.Record == null ||
                     (peer.Spectator && !(includeRestorable && (peer.RoundEliminated || peer.RoundWaiting)))) continue;
                 byte[] position = peer.Position;
-                players.Add(new HotPotatoPlayer { Id = peer.Id, HasPosition = position != null,
+                players.Add(new HotPotatoPlayer { Id = peer.Id, HasPosition = position != null && !peer.Respawning,
                     X = position == null ? 0 : BitConverter.ToUInt16(position, 10) & 0x7FFF,
                     Y = position == null ? 0 : BitConverter.ToUInt16(position, 12) & 0x7FFF,
                     PositionTime = peer.PositionTime });
@@ -551,12 +755,20 @@ namespace Jj2
                         break;
                     case HotPotatoChangeKind.Eliminated:
                         foreach (Peer peer in Snapshot())
-                            if (peer.Id == change.Player) { peer.RoundEliminated = true; SetSpectator(peer, true); }
+                            if (peer.Id == change.Player)
+                            {
+                                peer.RoundEliminated = true;
+                                SetSpectator(peer, true);
+                                TrySend(peer, Jj2ServerPackets.Console("[Out] Your fuse expired. Watch until the next round; !watch ID changes the camera."));
+                            }
                         Announce("Hot Potato: " + PlayerName(change.Player) + " was eliminated!");
                         break;
                     case HotPotatoChangeKind.Winner:
                         winnerName = PlayerName(change.Player);
-                        Announce("Hot Potato winner: " + winnerName + "! Use /start for a new round.");
+                        winnerPeer = null;
+                        foreach (Peer peer in Snapshot())
+                            if (peer.Id == change.Player) { winnerPeer = peer; peer.Wins++; }
+                        Announce("[Winner] Hot Potato winner: " + winnerName + "! Host: Start round. Players: !play to rejoin.");
                         break;
                     case HotPotatoChangeKind.Empty:
                         Announce("Hot Potato ended: no players remain. Use /start for a new round.");
@@ -605,12 +817,18 @@ namespace Jj2
                         if (eligible.Count < 2) { log("Hot Potato needs at least two active non-spectator players."); return; }
                         RestoreRoundPlayers();
                         winnerName = null;
+                        winnerPeer = null;
+                        roundNumber++;
+                        lastCountdown = 0;
+                        Announce("[Round] Round " + roundNumber + " started! Touch to pass; the fuse never resets on a pass.");
                         ApplyChanges(hotPotato.Start(GameTime, eligible));
                         return;
                     case "/reset":
                         if (!IsHotPotato) { log("Unsupported in Battle mode: select Hot Potato when hosting."); return; }
                         hotPotato.Reset();
                         winnerName = null;
+                        winnerPeer = null;
+                        lastCountdown = 0;
                         RefreshMarkers();
                         RestoreRoundPlayers();
                         Announce("Hot Potato reset. Use /start when at least two players are ready.");
@@ -624,6 +842,7 @@ namespace Jj2
         {
             byte[] packet = IsHotPotato ? Jj2ServerPackets.SugarRush(position, hotPotato.Holder == peer.Id)
                 : (byte[])position.Clone();
+            if (peer.Respawning) packet[6] = peer.Id;
             packet[3] = NextSequence();
             jj2udpClient.CalculateUdpChecksum(packet);
             return packet;
@@ -642,7 +861,7 @@ namespace Jj2
                 if (!source.Ready || source.Spectator || position == null) continue;
                 byte[] packet = MarkPosition(source, position);
                 foreach (Peer destination in Snapshot())
-                    if ((destination != source || (IsHotPotato && Spawned(position))) && destination.Ready) SendUdp(destination, packet);
+                    if (destination != source && destination.Ready) SendUdp(destination, packet);
             }
         }
 
@@ -654,7 +873,6 @@ namespace Jj2
 
         static bool Spawned(byte[] position)
         {
-            // Echoing full health back to an unspawned native player cancels its respawn.
             return (BitConverter.ToUInt16(position, 10) & 0x7FFF) != 0 ||
                 (BitConverter.ToUInt16(position, 12) & 0x7FFF) != 0;
         }
@@ -763,17 +981,29 @@ namespace Jj2
                 byte[] state = Jj2ServerPackets.Position(packet, sender.Id);
                 lock (gameSync)
                 {
-                    if (sender.Spectator) return;
+                    if (!sender.Ready || sender.Spectator) return;
                     sender.Position = state;
                     sender.PositionTime = GameTime;
-                    if (Spawned(state))
+                    if (Spawned(state) && !sender.HudReady)
+                        CompleteRespawn(sender);
+                    if (Spawned(state) && !sender.Respawning)
                         sender.PendingRespawn = null;
                     UpdateRound();
                     if (sender.Spectator) return;
                     byte[] marked = MarkPosition(sender, state);
                     foreach (Peer peer in Snapshot())
-                        if ((peer != sender || (IsHotPotato && Spawned(state))) && peer.Ready) SendUdp(peer, marked);
+                        if (peer != sender && peer.Ready) SendUdp(peer, marked);
                 }
+            }
+            else if (packet[2] == 8 && packet.Length == 13 && BitConverter.ToUInt32(packet, 4) == 4 &&
+                packet[8] == 0x0C && packet[11] == sender.Id)
+            {
+                lock (gameSync) BeginRespawn(sender);
+            }
+            else if (packet[2] == 8 && packet.Length == 11 && BitConverter.ToUInt32(packet, 4) == 2 &&
+                packet[8] == 0x0F && packet[9] == sender.Id && packet[10] == sender.Id)
+            {
+                lock (gameSync) BeginRespawn(sender);
             }
             else if (packet[2] == 8 && packet.Length == 25 && BitConverter.ToUInt32(packet, 4) == 16 &&
                 packet[8] == 0x22 && ((packet[9] | packet[10] << 8) >> 10) == sender.Id)
@@ -791,6 +1021,16 @@ namespace Jj2
         {
             lastPulse = DateTime.UtcNow;
             UpdateRound();
+            lock (gameSync)
+            {
+                int seconds = (int)Math.Ceiling(hotPotato.Deadline - GameTime);
+                if (IsHotPotato && hotPotato.Running && seconds > 0 && seconds <= 3 && seconds != lastCountdown)
+                {
+                    lastCountdown = seconds;
+                    Announce("[Timer] " + seconds + "s left! Potato: " + PlayerName(hotPotato.Holder));
+                }
+                if (seconds > 3) lastCountdown = 0;
+            }
             if (IsHotPotato) lock (gameSync) RefreshMarkers();
             lock (gameSync)
                 foreach (Peer peer in Snapshot())
@@ -808,7 +1048,7 @@ namespace Jj2
                 if (IsHotPotato && peer.Ready && !peer.HudReady && !peer.HudWarning && GameTime - peer.ReadyTime > 3)
                 {
                     peer.HudWarning = true;
-                    string warning = "Hot Potato HUD did not initialize. Native JJ2+ clients must allow the bundled script download.";
+                    string warning = "[HUD] Local stars/timer unavailable. Native JJ2+ clients: allow script downloads. !rules for help.";
                     log("Player " + peer.Id + ": " + warning);
                     TrySend(peer, Jj2ServerPackets.Console(warning));
                 }
@@ -829,7 +1069,6 @@ namespace Jj2
             lock (peer.Reported)
                 if (!peer.Reported.Add(opcode)) return;
             log("Player " + peer.Id + ": unsupported " + transport + " opcode/format 0x" + (opcode & 255).ToString("X2") + ".");
-            if (peer.Ready) TrySend(peer, Jj2ServerPackets.Console("Some gameplay packets are unsupported by this standalone sandbox."));
         }
 
         void Send(Peer peer, byte[] packet)

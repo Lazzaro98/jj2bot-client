@@ -3,6 +3,8 @@ uint16 potatoTicks = 0;
 uint potatoStateTick = 0;
 bool potatoSynchronized = false;
 array<bool> potatoTimerOwned(4, false);
+bool potatoLifeKnown = false;
+bool potatoWasAlive = false;
 
 void onLevelBegin() {
     jjSTREAM ready;
@@ -37,6 +39,16 @@ void potatoTimerEnd(jjPLAYER@ player) {
 }
 
 void onPlayer(jjPLAYER@ player) {
+    bool alive = player.health > 0;
+    if (!potatoLifeKnown || alive != potatoWasAlive) {
+        potatoLifeKnown = true;
+        potatoWasAlive = alive;
+        jjSTREAM life;
+        life.push(uint8(1));
+        life.push(uint8(2));
+        life.push(uint8(alive ? 1 : 0));
+        jjSendPacket(life);
+    }
     int timeLeft = potatoTimeLeft();
     uint localID = player.localPlayerID;
     if (timeLeft > 0) {

@@ -108,7 +108,11 @@ but not this native HUD.
   separate before passing back, preventing stationary ping-pong.
 - Passing **never resets the 15-second fuse**. Expiry removes the holder from
   the round and forces spectating using native TCP `0x41`. An eliminated
-  player cannot rejoin until a new round.
+  player cannot rejoin while that round is running.
+- Normal map death (or `!respawn` when stuck) is different from elimination:
+  the player respawns and becomes visible again without losing round membership
+  or resetting the holder's fuse. Respawning players cannot pass the potato
+  until their live position resumes.
 - Each elimination selects another random survivor with a fresh fuse.
   The last survivor wins; zero survivors ends without a winner.
 - Disconnecting or voluntarily spectating removes a participant immediately.
@@ -118,12 +122,34 @@ but not this native HUD.
   voluntary spectators. **Reset round** (`/reset`) cancels a running round,
   clears markers and restores eliminated/waiting players without starting.
 
+The server window includes a live player list with assigned names, loading,
+lobby, holder, respawn, spectator and elimination states, plus session wins.
+Names are unique ignoring case and JJ2 color separators: a second `Jazz`
+becomes `Jazz2`, then `Jazz3` if needed. Existing suffixed names are also reserved;
+names remain within the native 32-character limit.
+
 Local administrator commands are exactly `/start`, `/reset`, `/status` and
 `/help`; start/reset apply only to Hot Potato. Text without `/` is a server
-announcement (printable ASCII, up to 240 characters). Connected players have
-only `/status` and `/help`, not administrator access. Unsupported commands are
-explicitly rejected. Round controls do not silently implement JJ2+'s unrelated
-native administrative commands.
+announcement (printable ASCII, up to 240 characters). Player chat commands:
+
+| Command | Action |
+| --- | --- |
+| `!help`, `!rules`, `!status` | Commands, rules and current round status |
+| `!players` | Player IDs, assigned names, states and wins |
+| `!spec` | Voluntarily spectate; leaving a running round forfeits participation |
+| `!watch ID` | Spectate a live player; automatically retarget if they become unavailable |
+| `!play` | Return to play between rounds; cannot escape an ongoing elimination |
+| `!respawn` | Respawn when stuck; never resets the potato fuse |
+
+Slash aliases are also accepted by the server, but use `!` in native JJ2+ chat
+to avoid commands that the game itself intercepts. The native spectator toggle
+is supported too. Forced late/eliminated spectators rejoin on the host's next
+start/reset; voluntary spectators stay watching unless they request `!play`.
+Players cannot start/reset rounds or obtain administrator access.
+
+Join/leave, respawn, spectator, round, holder and winner messages explain what is
+happening. The final three fuse seconds are announced once each. Technical
+unsupported-packet diagnostics stay in the host log rather than flooding players.
 
 Hot Potato authoritatively handles its own proximity/fuse/elimination rules,
 but still uses the Battle networking sandbox: it does **not** add damage,
@@ -134,8 +160,8 @@ of contact damage or invulnerability.
 Protocol evidence: a controlled native JJ2+ reference server produced
 `C3-7A-02-27-01-5E-A0-02-00-01-E0-80-E6-03-3D-02-00-00`
 while its host had Sugar Rush. In a single-player `0x02` update, the status
-byte at offset 7 has bit `0x02` set. Hot Potato rewrites only that bit and the
-UDP checksum/sequence. Clearing it on transfer removes the old remote-player
+byte at offset 7 has bit `0x02` set. Holder marking rewrites only that bit and
+the UDP checksum/sequence. Clearing it on transfer removes the old remote-player
 marker and gives the next player the native flashing/star effect. That replicated
 bit alone does not provide local stars or an authoritative countdown, so Hot
 Potato additionally advertises its immutable module with TCP `0x5A`, serves it
@@ -143,6 +169,12 @@ over the existing `0x14` file transport, and sends versioned holder/fuse updates
 using the native script stream (`0x56`, module ID 1). A `0x57` readiness message
 confirms that the client's module actually initialized; missing acknowledgements
 produce an explicit HUD warning without changing the round rules.
+The same module reports local alive/dead transitions. Native self-death requests
+are acknowledged with the server death event, remote health is zero while
+respawning, and the roster is refreshed when the player returns. The server
+never echoes fabricated health/position back to the moving player: doing so can
+interrupt the native death/respawn transition. Fresh live positions are required
+before proximity passes resume.
 Leaving spectating also sends the native self-respawn event (`0x07` batch
 containing `0x0F, player ID, player ID`) and refreshes that player's `0x12`
 roster record; merely clearing the spectator bit would
