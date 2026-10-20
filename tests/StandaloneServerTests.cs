@@ -168,6 +168,14 @@ class StandaloneServerTests
             nativePong = new byte[] { 1, 0x2E, 4, 0x35, 0, 0, 0, 0, 0xC2 };
             Assert(Convert.ToBase64String(Jj2ServerPackets.Pong(nativePing)) == Convert.ToBase64String(nativePong),
                 "Short browser ping did not produce a complete nine-byte response.");
+            nativePing = new byte[] { 0xF8, 0xAD, 3, 0x35, 0x78, 0x56, 0x34, 0x12, 0x32, 0x34, 0x20, 0x20 };
+            nativePong = new byte[] { 0xD5, 0x72, 4, 0x35, 0x78, 0x56, 0x34, 0x12, 0x82 };
+            Assert(Convert.ToBase64String(Jj2ServerPackets.Pong(nativePing)) == Convert.ToBase64String(nativePong),
+                "A supported native browser version must match the captured joinable pong, not grey out the server.");
+            nativePing = new byte[] { 0xF4, 0xA1, 3, 0x35, 0x78, 0x56, 0x34, 0x12, 0x32, 0x30, 0x20, 0x20 };
+            nativePong = new byte[] { 0x1A, 0xB2, 4, 0x35, 0x78, 0x56, 0x34, 0x12, 0xC2 };
+            Assert(Convert.ToBase64String(Jj2ServerPackets.Pong(nativePing)) == Convert.ToBase64String(nativePong),
+                "An unsupported native browser version must retain the captured incompatibility flag.");
 
             Jj2ServerOptions options = new Jj2ServerOptions { AssetDirectory = directory, LevelPath = levelPath,
                 Port = FreePort(), MaxPlayers = 2, ServerName = "Sandbox test" };
@@ -205,6 +213,22 @@ class StandaloneServerTests
                     reply = browser.Receive(ref ep);
                     Assert(reply[2] == 6 && reply[3] == 0 && Jj2ServerPackets.ValidUdp(reply),
                         "Extended native discovery request was ignored or incorrectly echoed.");
+                    foreach (string version in new[] { "24  ", "23  ", "20  ", "xxxx" })
+                    foreach (int length in new[] { 12, 16 })
+                    {
+                        byte[] ping = new byte[length];
+                        ping[2] = 3; ping[3] = 0x35;
+                        Array.Copy(new byte[] { 0x78, 0x56, 0x34, 0x12 }, 0, ping, 4, 4);
+                        Array.Copy(Encoding.ASCII.GetBytes(version), 0, ping, 8, 4);
+                        jj2udpClient.CalculateUdpChecksum(ping);
+                        browser.Send(ping, ping.Length);
+                        reply = browser.Receive(ref ep);
+                        byte flags = (byte)(version == "24  " || version == "23  " ? 0x82 : 0xC2);
+                        Assert(reply.Length == 9 && reply[2] == 4 && reply[3] == 0x35 &&
+                            BitConverter.ToUInt32(reply, 4) == 0x12345678 &&
+                            reply[8] == flags && Jj2ServerPackets.ValidUdp(reply),
+                            "Native browser compatibility disagrees with the accepted TCP versions.");
+                    }
                 }
                 using (Client a = new Client(server.Port, "Alpha"))
                 using (Client b = new Client(server.Port, "Bravo"))

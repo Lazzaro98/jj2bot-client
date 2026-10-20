@@ -230,7 +230,7 @@ namespace Jj2
                     int port = packet[p] | packet[p + 1] << 8;
                     if (port == 0) throw new InvalidDataException("Invalid UDP port.");
                     string version = Encoding.ASCII.GetString(packet, p + 2, 4);
-                    if (version != "24  " && version != "23  ") throw new InvalidDataException("Unsupported JJ2 version.");
+                    if (!Jj2ServerPackets.SupportsVersion(version)) throw new InvalidDataException("Unsupported JJ2 version.");
                     peer.Udp = new IPEndPoint(((IPEndPoint)peer.Tcp.Client.RemoteEndPoint).Address, port);
                     using (MemoryStream body = new MemoryStream())
                     using (BinaryWriter writer = new BinaryWriter(body))

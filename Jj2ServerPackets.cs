@@ -76,16 +76,23 @@ namespace Jj2
             return packet[0] == copy[0] && packet[1] == copy[1];
         }
 
+        public static bool SupportsVersion(string version)
+        {
+            return version == "24  " || version == "23  ";
+        }
+
         public static byte[] Pong(byte[] request)
         {
             if (request == null || request.Length < 4 || request[2] != 3)
                 throw new ArgumentException("A browser ping requires opcode 0x03 and a sequence byte.");
             // Native browser pings carry a sequence and optional four-byte timestamp.
-            // JJ2+ always returns nine bytes, ending with plus capabilities + Battle.
+            // The version follows the timestamp; bit 0x40 disables incompatible entries.
             byte[] response = new byte[9];
             response[2] = 4;
             Array.Copy(request, 3, response, 3, Math.Min(5, request.Length - 3));
-            response[8] = 0xC2;
+            response[8] = 0x82;
+            if (request.Length < 12 || !SupportsVersion(Encoding.ASCII.GetString(request, 8, 4)))
+                response[8] |= 0x40;
             jj2udpClient.CalculateUdpChecksum(response);
             return response;
         }
