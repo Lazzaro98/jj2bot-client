@@ -76,6 +76,36 @@ namespace Jj2
             return packet[0] == copy[0] && packet[1] == copy[1];
         }
 
+        public static byte[] Pong(byte[] request)
+        {
+            if (request == null || request.Length < 4 || request[2] != 3)
+                throw new ArgumentException("A browser ping requires opcode 0x03 and a sequence byte.");
+            // Native browser pings carry a sequence and optional four-byte timestamp.
+            // JJ2+ always returns nine bytes, ending with plus capabilities + Battle.
+            byte[] response = new byte[9];
+            response[2] = 4;
+            Array.Copy(request, 3, response, 3, Math.Min(5, request.Length - 3));
+            response[8] = 0xC2;
+            jj2udpClient.CalculateUdpChecksum(response);
+            return response;
+        }
+
+        public static byte[] Discovery(string name, byte playerCount, byte playerLimit, uint uptime)
+        {
+            byte[] text = Encoding.ASCII.GetBytes(name);
+            byte[] reply = new byte[20 + text.Length];
+            reply[2] = 6;
+            // Unlike 0x04, 0x06 has a reserved zero byte, not the query sequence.
+            Array.Copy(BitConverter.GetBytes(uptime), 0, reply, 4, 4);
+            Array.Copy(Encoding.ASCII.GetBytes("24  "), 0, reply, 8, 4);
+            reply[12] = playerCount; reply[13] = 1; reply[14] = 2;
+            reply[15] = playerLimit; reply[16] = (byte)text.Length;
+            Array.Copy(text, 0, reply, 17, text.Length);
+            reply[reply.Length - 1] = 0xC0;
+            jj2udpClient.CalculateUdpChecksum(reply);
+            return reply;
+        }
+
         public static byte[] Position(byte[] client, byte playerId)
         {
             if (client.Length != 17 || client[2] != 1 || client[4] != 1)

@@ -160,6 +160,14 @@ class StandaloneServerTests
             Assert(Jj2ServerPackets.ValidUdp(query), "UDP checksum failed.");
             query[3]++;
             Assert(!Jj2ServerPackets.ValidUdp(query), "Corrupt UDP checksum accepted.");
+            byte[] nativePing = { 0xDF, 0xF0, 3, 0x35, 0x32, 0x34, 0x20, 0x20 };
+            byte[] nativePong = { 0xA7, 0xA2, 4, 0x35, 0x32, 0x34, 0x20, 0x20, 0xC2 };
+            Assert(Convert.ToBase64String(Jj2ServerPackets.Pong(nativePing)) == Convert.ToBase64String(nativePong),
+                "Browser pong differs from the captured native JJ2+ response.");
+            nativePing = new byte[] { 0x39, 0x3E, 3, 0x35 };
+            nativePong = new byte[] { 1, 0x2E, 4, 0x35, 0, 0, 0, 0, 0xC2 };
+            Assert(Convert.ToBase64String(Jj2ServerPackets.Pong(nativePing)) == Convert.ToBase64String(nativePong),
+                "Short browser ping did not produce a complete nine-byte response.");
 
             Jj2ServerOptions options = new Jj2ServerOptions { AssetDirectory = directory, LevelPath = levelPath,
                 Port = FreePort(), MaxPlayers = 2, ServerName = "Sandbox test" };
@@ -176,8 +184,27 @@ class StandaloneServerTests
                     browser.Send(query, query.Length);
                     IPEndPoint ep = null;
                     byte[] reply = browser.Receive(ref ep);
-                    Assert(reply[2] == 6 && reply[3] == 9 && reply[15] == 2 &&
+                    Assert(reply[2] == 6 && reply[3] == 0 && reply[15] == 2 &&
                         Encoding.ASCII.GetString(reply, 17, reply[16]) == "Sandbox test", "Native discovery response failed.");
+                    foreach (int length in new[] { 4, 8, 9, 12 })
+                    {
+                        byte[] ping = new byte[length];
+                        ping[2] = 3; ping[3] = 0x35;
+                        for (int i = 4; i < Math.Min(8, length); i++) ping[i] = (byte)(i * 31);
+                        jj2udpClient.CalculateUdpChecksum(ping);
+                        browser.Send(ping, ping.Length);
+                        reply = browser.Receive(ref ep);
+                        Assert(reply.Length == 9 && reply[2] == 4 && reply[3] == 0x35 &&
+                            reply[8] == 0xC2 && Jj2ServerPackets.ValidUdp(reply),
+                            "Native browser ping response has the wrong shape or checksum.");
+                        for (int i = 4; i < 8; i++)
+                            Assert(reply[i] == (i < length ? ping[i] : 0), "Browser timestamp was not echoed.");
+                    }
+                    byte[] extendedQuery = Jj2ServerPackets.Udp(5, 0x35, new byte[8]);
+                    browser.Send(extendedQuery, extendedQuery.Length);
+                    reply = browser.Receive(ref ep);
+                    Assert(reply[2] == 6 && reply[3] == 0 && Jj2ServerPackets.ValidUdp(reply),
+                        "Extended native discovery request was ignored or incorrectly echoed.");
                 }
                 using (Client a = new Client(server.Port, "Alpha"))
                 using (Client b = new Client(server.Port, "Bravo"))

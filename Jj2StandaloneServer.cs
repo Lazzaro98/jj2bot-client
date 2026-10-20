@@ -70,6 +70,7 @@ namespace Jj2
         volatile bool running;
         byte udpSequence;
         DateTime lastPulse;
+        readonly System.Diagnostics.Stopwatch uptime = new System.Diagnostics.Stopwatch();
 
         public int Port { get { return options.Port; } }
         public bool IsRunning { get { return running; } }
@@ -126,6 +127,7 @@ namespace Jj2
                 throw;
             }
             running = true;
+            uptime.Restart();
             acceptThread = new Thread(AcceptLoop) { IsBackground = true };
             udpThread = new Thread(UdpLoop) { IsBackground = true };
             acceptThread.Start();
@@ -426,25 +428,16 @@ namespace Jj2
         {
             if (TracePackets && packet[2] != 1)
                 log("UDP " + BitConverter.ToString(packet, 0, Math.Min(packet.Length, 32)));
-            if (packet[2] == 5 && packet.Length == 4)
+            if (packet[2] == 5)
             {
-                byte[] name = Encoding.ASCII.GetBytes(options.ServerName);
-                byte[] reply = new byte[20 + name.Length];
-                reply[2] = 6; reply[3] = packet[3]; reply[4] = 2;
-                Array.Copy(Encoding.ASCII.GetBytes("24  "), 0, reply, 8, 4);
-                reply[12] = (byte)PlayerCount; reply[13] = 1; reply[14] = 2;
-                reply[15] = (byte)options.MaxPlayers; reply[16] = (byte)name.Length;
-                Array.Copy(name, 0, reply, 17, name.Length);
-                reply[reply.Length - 1] = 0xC0;
-                jj2udpClient.CalculateUdpChecksum(reply);
+                byte[] reply = Jj2ServerPackets.Discovery(options.ServerName, (byte)PlayerCount,
+                    (byte)options.MaxPlayers, (uint)uptime.Elapsed.TotalSeconds);
                 udp.Send(reply, reply.Length, endpoint);
                 return;
             }
-            if (packet[2] == 3 && packet.Length <= 8)
+            if (packet[2] == 3)
             {
-                byte[] reply = (byte[])packet.Clone();
-                reply[2] = 4;
-                jj2udpClient.CalculateUdpChecksum(reply);
+                byte[] reply = Jj2ServerPackets.Pong(packet);
                 udp.Send(reply, reply.Length, endpoint);
                 return;
             }
