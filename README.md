@@ -33,7 +33,10 @@ This starts **our own TCP/UDP server inside the client application**.
 It does not launch or depend on `Jazz2.exe`; only the level and tileset files
 are needed. The asset folder is remembered locally.
 
-The server window displays connected player counts and a live log.
+Battle sandbox remains the default; choose **Hot Potato** explicitly to enable
+the elimination mode described below. The server window displays connected
+player counts, round status and a live log. Its input sends server announcements
+to every connected player; Enter or **Send** submits it.
 **Join server** connects our bot client to `127.0.0.1` on the configured port.
 Native JJ2+ clients can connect directly, for example:
 
@@ -70,9 +73,66 @@ interoperability checks use your own game assets and native JJ2+ as a *client*:
 .\tests\RunHostingTests.ps1 -AssetDirectory 'C:\games\Jazz2+' -NativeExecutable 'C:\games\Jazz2+\Jazz2.exe'
 ```
 
-These checks host our standalone server, download its assets into a temporary
+These checks host our standalone server, download its assets into a disposable
 bot cache, connect two actual bot clients and optionally connect a native JJ2+
-client. The native executable is not used to host the server.
+client. Scratch data stays under the project's ignored `bin\HostingTests`
+directory. Native checks also run a complete Hot Potato round, including
+proximity transfer, expiry, spectator enforcement, winner and restart, and save
+native window captures there for visual inspection. The native executable is
+not used to host the server.
+
+### Hot Potato
+
+Choose **Hot Potato (15-second fuse)** in the hosting dialog. In the server
+window, **Start round** (or `/start`) requires at least two ready,
+non-spectating players and randomly selects the holder. The server announces
+each holder and the remaining fuse. The native Sugar Rush visual marks the
+holder using JJ2+'s existing UDP player-state packet, not an executable patch,
+AngelScript module or required mutator.
+
+- A player within **32 pixels** of the holder receives the potato. Positions
+  must be no more than **one second old**. The nearest eligible player wins
+  ties by player ID.
+- Transfers have a **one-second global cooldown**. A touching pair must
+  separate before passing back, preventing stationary ping-pong.
+- Passing **never resets the 15-second fuse**. Expiry removes the holder from
+  the round and forces spectating using native TCP `0x41`. An eliminated
+  player cannot rejoin until a new round.
+- Each elimination selects another random survivor with a fresh fuse.
+  The last survivor wins; zero survivors ends without a winner.
+- Disconnecting or voluntarily spectating removes a participant immediately.
+  If the holder leaves, a replacement gets a fresh fuse. Late joiners wait as
+  spectators until the next round.
+- **Start round** after a finish restores eliminated/waiting players, but not
+  voluntary spectators. **Reset round** (`/reset`) cancels a running round,
+  clears markers and restores eliminated/waiting players without starting.
+
+Local administrator commands are exactly `/start`, `/reset`, `/status` and
+`/help`; start/reset apply only to Hot Potato. Text without `/` is a server
+announcement (printable ASCII, up to 240 characters). Connected players have
+only `/status` and `/help`, not administrator access. Unsupported commands are
+explicitly rejected. Round controls do not silently implement JJ2+'s unrelated
+native administrative commands.
+
+Hot Potato authoritatively handles its own proximity/fuse/elimination rules,
+but still uses the Battle networking sandbox: it does **not** add damage,
+pickup synchronization or CTF. Positions are supplied by clients; this is not
+an anti-cheat server. Sugar Rush is a visual holder marker, not an implementation
+of contact damage or invulnerability.
+
+Protocol evidence: a controlled native JJ2+ reference server produced
+`C3-7A-02-27-01-5E-A0-02-00-01-E0-80-E6-03-3D-02-00-00`
+while its host had Sugar Rush. In a single-player `0x02` update, the status
+byte at offset 7 has bit `0x02` set. Hot Potato rewrites only that bit and the
+UDP checksum/sequence. Clearing it on transfer removes the old remote-player
+marker and gives the next player the native flashing/star effect. Holder and
+remaining-fuse announcements also identify the potato to its local carrier;
+this replicated status is not a native local Sugar Rush timer/HUD.
+Leaving spectating also sends the native self-respawn event (`0x07` batch
+containing `0x0F, player ID, player ID`) and refreshes that player's `0x12`
+roster record; merely clearing the spectator bit would
+leave a native player unspawned at `(0,0)`. The captured reference packet for
+player 1 with sequence `E2` was `02-BA-07-E2-02-00-00-00-0F-01-01`.
 
 ## Map downloads
 

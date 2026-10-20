@@ -1,10 +1,12 @@
 using System;
 using System.Collections;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -35,7 +37,7 @@ static class StandaloneInteropTests
 
     public static void Run(string assets, string executable)
     {
-        string temporary = Path.Combine(Path.GetTempPath(), "jj2-interop-" + Guid.NewGuid().ToString("N"));
+        string temporary = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "jj2-interop-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(temporary);
         string originalDirectory = jj2udpClient.GameDirectory;
         Process native = null;
@@ -79,7 +81,7 @@ static class StandaloneInteropTests
                 {
                     StringBuilder nativeOutput = new StringBuilder();
                     native = Process.Start(new ProcessStartInfo(executable,
-                        "-connect 127.0.0.1:" + server.Port + " -windowed") {
+                        "-connect 127.0.0.1:" + server.Port + " -windowed -nochatlogger") {
                             WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(executable)), UseShellExecute = false,
                             RedirectStandardOutput = true });
                     if (native == null) throw new Exception("Native JJ2+ client did not start.");
@@ -99,9 +101,11 @@ static class StandaloneInteropTests
                             {
                                 Type type = peer.GetType();
                                 string name = (string)type.GetField("Name").GetValue(peer);
+                                byte[] position = (byte[])type.GetField("Position").GetValue(peer);
                                 if (name != null && name != "Bot Alpha" && name != "Bot Bravo" &&
-                                    (bool)type.GetField("Ready").GetValue(peer) && type.GetField("Position").GetValue(peer) != null)
-                                    return true;
+                                    (bool)type.GetField("Ready").GetValue(peer) && position != null &&
+                                    ((BitConverter.ToUInt16(position, 10) & 0x7FFF) != 0 ||
+                                    (BitConverter.ToUInt16(position, 12) & 0x7FFF) != 0)) return true;
                             }
                         }
                         return false;
@@ -154,5 +158,170 @@ static class StandaloneInteropTests
                 Directory.Delete(temporary, true);
             }
         }
+    if (!String.IsNullOrEmpty(executable)) RunHotPotato(assets, executable);
+    }
+
+    [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out WindowRect rectangle);
+    [StructLayout(LayoutKind.Sequential)]
+    struct WindowRect { public int Left, Top, Right, Bottom; }
+
+    static void CaptureNative(Process native, string name)
+    {
+    native.Refresh();
+    WindowRect rectangle;
+    if (native.MainWindowHandle == IntPtr.Zero || !GetWindowRect(native.MainWindowHandle, out rectangle))
+        throw new Exception("Native game window unavailable for visual verification.");
+    using (Bitmap image = new Bitmap(rectangle.Right - rectangle.Left, rectangle.Bottom - rectangle.Top))
+    {
+        using (Graphics graphics = Graphics.FromImage(image))
+        {
+            IntPtr dc = graphics.GetHdc();
+            try { if (!PrintWindow(native.MainWindowHandle, dc, 0)) throw new Exception("Native window capture failed."); }
+            finally { graphics.ReleaseHdc(dc); }
+        }
+        image.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, name + ".png"));
+    }
+    }
+
+    static object NativePeer(Jj2StandaloneServer server)
+    {
+    object sync = typeof(Jj2StandaloneServer).GetField("sync", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(server);
+    lock (sync)
+    {
+        IDictionary peers = (IDictionary)typeof(Jj2StandaloneServer).GetField("peers", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(server);
+        foreach (object peer in peers.Values)
+        {
+            string name = (string)peer.GetType().GetField("Name").GetValue(peer);
+            if (name != null && name != "Potato Alpha" && name != "Potato Bravo") return peer;
+        }
+    }
+    return null;
+    }
+
+    static byte[] NativePosition(object peer)
+    {
+    return peer == null ? null : (byte[])peer.GetType().GetField("Position").GetValue(peer);
+    }
+
+    static void RunHotPotato(string assets, string executable)
+    {
+    Process native = null;
+    jj2udpClient alpha = null, bravo = null;
+    string original = jj2udpClient.GameDirectory;
+    using (Form controls = new Form())
+    using (RichTextBox chatA = new RichTextBox())
+    using (RichTextBox playersA = new RichTextBox())
+    using (RichTextBox inputA = new RichTextBox())
+    using (RichTextBox chatB = new RichTextBox())
+    using (RichTextBox playersB = new RichTextBox())
+    using (RichTextBox inputB = new RichTextBox())
+    using (Jj2StandaloneServer server = new Jj2StandaloneServer(new Jj2ServerOptions {
+        AssetDirectory = assets, LevelPath = Path.Combine(assets, "bbswing.j2l"), Port = FreePort(),
+        MaxPlayers = 4, ServerName = "Hot Potato native verification", HotPotato = true },
+        Console.WriteLine, delegate(int count) { return count - 1; }))
+    {
+        controls.Controls.AddRange(new Control[] { chatA, playersA, inputA, chatB, playersB, inputB });
+        foreach (Control control in controls.Controls) { IntPtr handle = control.Handle; }
+        try
+        {
+            server.Start();
+            jj2udpClient.GameDirectory = assets;
+            alpha = new jj2udpClient(IPAddress.Loopback, server.Port, 0, "Potato Alpha", chatA, playersA, inputA, 1, 0, null);
+            Wait(delegate { return alpha.IsReadyForChat() && alpha.Body != null; }, "Hot Potato Alpha not ready.", 15);
+            bravo = new jj2udpClient(IPAddress.Loopback, server.Port, 0, "Potato Bravo", chatB, playersB, inputB, 1, 0, null);
+            Wait(delegate { return bravo.IsReadyForChat() && bravo.Body != null; }, "Hot Potato Bravo not ready.", 15);
+            alpha.SetPosition(20000, 20000); bravo.SetPosition(30000, 30000);
+            native = Process.Start(new ProcessStartInfo(executable,
+                "-connect 127.0.0.1:" + server.Port + " -windowed -nochatlogger") {
+                WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(executable)), UseShellExecute = false,
+                RedirectStandardOutput = true });
+            if (native == null) throw new Exception("Native Hot Potato client failed to start.");
+            native.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
+            { if (e.Data != null) Console.WriteLine("NATIVE: " + e.Data); };
+            native.BeginOutputReadLine();
+            object nativePeer = null;
+            Wait(delegate {
+                if (native.HasExited) throw new Exception("Native Hot Potato client exited.");
+                nativePeer = NativePeer(server);
+                byte[] position = NativePosition(nativePeer);
+                return position != null && (BitConverter.ToUInt16(position, 10) & 0x7FFF) > 0;
+            }, "Native Hot Potato client did not spawn.", 20);
+            byte nativeId = (byte)nativePeer.GetType().GetField("Id").GetValue(nativePeer);
+            HotPotatoRound round = (HotPotatoRound)typeof(Jj2StandaloneServer)
+                .GetField("hotPotato", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(server);
+            server.ExecuteAdmin("/start");
+            if (round.Holder != nativeId) throw new Exception("Injected random selector did not select the native player.");
+            double firstDeadline = round.Deadline;
+            Stopwatch frames = Stopwatch.StartNew();
+            while (frames.ElapsedMilliseconds < 2800) { Application.DoEvents(); Thread.Sleep(15); }
+            CaptureNative(native, "native-hotpotato-local-holder");
+            Wait(delegate {
+                byte[] position = NativePosition(nativePeer);
+                if (position != null)
+                    alpha.SetPosition((BitConverter.ToUInt16(position, 10) & 0x7FFF) + 8,
+                        BitConverter.ToUInt16(position, 12) & 0x7FFF);
+                return round.Holder == alpha.Tcp.MyPlayerId;
+            }, "Native-to-bot proximity pass failed.", 5);
+            if (round.Deadline != firstDeadline) throw new Exception("Native transfer reset the fuse.");
+            frames.Restart();
+            while (frames.ElapsedMilliseconds < 650)
+            {
+                Application.DoEvents();
+                byte[] position = NativePosition(nativePeer);
+                if (position != null)
+                    alpha.SetPosition((BitConverter.ToUInt16(position, 10) & 0x7FFF) + 60,
+                        BitConverter.ToUInt16(position, 12) & 0x7FFF);
+                Thread.Sleep(15);
+            }
+            CaptureNative(native, "native-hotpotato-transferred");
+            alpha.SetPosition(20000, 20000);
+            Wait(delegate { return alpha.Tcp.IsSpectating; }, "Expired holder was not authoritatively spectated.", 18);
+            if (!round.Running || round.Holder != nativeId) throw new Exception("New holder was not selected after elimination.");
+            Wait(delegate { return round.Finished; }, "Second native fuse did not finish.", 18);
+            if (round.Winner != bravo.Tcp.MyPlayerId || !(bool)nativePeer.GetType().GetField("Spectator").GetValue(nativePeer))
+                throw new Exception("Native elimination/winner state incorrect.");
+            frames.Restart();
+            while (frames.ElapsedMilliseconds < 600) { Application.DoEvents(); Thread.Sleep(15); }
+            CaptureNative(native, "native-hotpotato-eliminated");
+            server.ExecuteAdmin("/start");
+            try { Wait(delegate {
+                byte[] position = NativePosition(nativePeer);
+                return !alpha.Tcp.IsSpectating && position != null &&
+                    ((BitConverter.ToUInt16(position, 10) & 0x7FFF) > 0 ||
+                    (BitConverter.ToUInt16(position, 12) & 0x7FFF) > 0);
+            },
+                "Fresh round did not restore eliminated clients.", 8); }
+            catch
+            {
+                byte[] position = NativePosition(nativePeer);
+                Console.WriteLine("Restart state: " + (position == null ? "no position" : BitConverter.ToString(position)) +
+                    ", Alpha spectating: " + alpha.Tcp.IsSpectating);
+                CaptureNative(native, "native-hotpotato-restart-failure");
+                throw;
+            }
+            if (!round.Running || round.RemainingPlayers != 3) throw new Exception("Fresh native round did not restart.");
+            frames.Restart();
+            while (frames.ElapsedMilliseconds < 600) { Application.DoEvents(); Thread.Sleep(15); }
+            CaptureNative(native, "native-hotpotato-restarted");
+            server.ExecuteAdmin("/reset");
+            if (round.Running || round.Holder.HasValue) throw new Exception("Native round reset failed.");
+            if (native.HasExited) throw new Exception("Native Hot Potato client disconnected unexpectedly.");
+            foreach (RemotePlayer player in alpha.GetRemotePlayers())
+                if (player.Key == alpha.Tcp.MyPlayerId) throw new Exception("Self marker created a duplicate bot avatar.");
+            Console.WriteLine("PASS: native JJ2+ Hot Potato holder announcements, proximity transfer without fuse reset, two expiries, forced spectator, winner and restart. Visual captures saved beside test runner for remote-marker inspection.");
+        }
+        finally
+        {
+            if (alpha != null) alpha.Disconnect();
+            if (bravo != null) bravo.Disconnect();
+            if (native != null)
+            {
+                if (!native.HasExited) { native.Kill(); native.WaitForExit(); }
+                native.Dispose();
+            }
+            jj2udpClient.GameDirectory = original;
+        }
+    }
     }
 }

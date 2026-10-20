@@ -125,5 +125,37 @@ namespace Jj2
             jj2udpClient.CalculateUdpChecksum(packet);
             return packet;
         }
+
+        public static byte[] SugarRush(byte[] position, bool enabled)
+        {
+            if (position == null || position.Length != 18 || position[2] != 2)
+                throw new ArgumentException("A single-player server position packet is required.");
+            byte[] packet = (byte[])position.Clone();
+            // Captured from native JJ2+ startSugarRush: remote-player status, bit 1.
+            packet[7] = (byte)((packet[7] & ~2) | (enabled ? 2 : 0));
+            jj2udpClient.CalculateUdpChecksum(packet);
+            return packet;
+        }
+
+        public static byte[] Spectator(byte socketId, bool enabled)
+        {
+            return Tcp(0x41, new byte[] { 1, 0, socketId, enabled ? socketId : (byte)0xFE });
+        }
+
+        public static byte[] Respawn(byte playerId, byte sequence)
+        {
+            // Native JJ2+ emits this self-death event when leaving spectator mode.
+            return Udp(7, sequence, new byte[] { 2, 0, 0, 0, 0x0F, playerId, playerId });
+        }
+
+        public static byte[] ClientStates(uint active, uint downloading, uint plus)
+        {
+            byte[] body = new byte[17];
+            body[1] = 32; body[7] = 1; body[12] = 2;
+            Array.Copy(BitConverter.GetBytes(active), 0, body, 3, 4);
+            Array.Copy(BitConverter.GetBytes(downloading), 0, body, 8, 4);
+            Array.Copy(BitConverter.GetBytes(plus), 0, body, 13, 4);
+            return Tcp(0x44, body);
+        }
     }
 }

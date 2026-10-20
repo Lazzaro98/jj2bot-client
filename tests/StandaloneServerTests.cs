@@ -15,7 +15,7 @@ class StandaloneServerTests
     static int checks;
     static void Assert(bool ok, string message) { checks++; if (!ok) throw new Exception(message); }
 
-    sealed class Client : IDisposable
+    internal sealed class Client : IDisposable
     {
         public TcpClient Tcp = new TcpClient();
         public UdpClient Udp = new UdpClient(0);
@@ -138,7 +138,7 @@ class StandaloneServerTests
 
     [STAThread] static void Main(string[] args)
     {
-        string directory = Path.Combine(Path.GetTempPath(), "jj2-server-" + Guid.NewGuid().ToString("N"));
+        string directory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "jj2-server-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         string levelPath = Path.Combine(directory, "test level.j2l"), tilesetPath = Path.Combine(directory, "test.j2t");
         byte[] info = new byte[83];
@@ -250,7 +250,7 @@ class StandaloneServerTests
                     Assert(chat[start] == a.Id && Encoding.ASCII.GetString(chat, start + 2, chat.Length - start - 2) == "hello",
                         "Chat relay or server-owned sender identity failed.");
                     a.Send(Jj2TcpPackets.CreateChatMessage(a.Id, "/ready"));
-                    Assert(Encoding.ASCII.GetString(a.Until(0x40)).Contains("not implemented"),
+                    Assert(Encoding.ASCII.GetString(a.Until(0x40)).Contains("Unsupported player command"),
                         "Unsupported server command did not report its limitation.");
                     Assert(Convert.ToBase64String(Download(a, "test level.j2l")) == Convert.ToBase64String(level),
                         "Level download differs from the served snapshot.");
@@ -315,6 +315,8 @@ class StandaloneServerTests
                 Assert(logs.Exists(delegate(string s) { return s.Contains("not part of this server"); }),
                     "Unauthorized file request was not reported.");
             Console.WriteLine("PASS: " + checks + " standalone protocol, network, asset and UI checks");
+            File.WriteAllBytes(levelPath, level);
+            HotPotatoTests.Run(directory, levelPath);
         }
         finally { File.Delete(levelPath); File.Delete(tilesetPath); Directory.Delete(directory); }
         if (args.Length > 0) StandaloneInteropTests.Run(args[0], args.Length > 1 ? args[1] : null);

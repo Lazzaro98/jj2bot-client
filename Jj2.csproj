@@ -65,6 +65,7 @@
     <Compile Include="HostServerForm.cs" />
     <Compile Include="HostedServerForm.cs" />
     <Compile Include="Jj2StandaloneServer.cs" />
+    <Compile Include="HotPotatoRound.cs" />
     <Compile Include="Jj2ServerPackets.cs" />
     <Compile Include="Jj2Models.cs" />
     <Compile Include="JjBotBody.cs" />

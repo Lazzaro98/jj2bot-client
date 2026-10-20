@@ -345,6 +345,7 @@ namespace Jj2
             }
 
             int key = p[6] & 0x1F;
+            if (key == tcpClient.MyPlayerId) return;
             int rawX = p[10] | (p[11] << 8);
             RemotePlayer rp = new RemotePlayer();
             rp.Key = key;
