@@ -49,6 +49,9 @@ namespace Jj2
             public bool Plus;
             public volatile bool Ready, Spectator;
             public bool RoundEliminated, RoundWaiting;
+            public volatile bool HudReady;
+            public bool HudWarning;
+            public double ReadyTime;
             public double PositionTime;
             public byte[] PendingRespawn;
             public double RespawnUntil;
@@ -127,6 +130,18 @@ namespace Jj2
             tileset = ReadAsset(tilesetPath, tilesetName);
             assets.Add(levelName, level);
             assets.Add(tilesetName, tileset);
+            if (IsHotPotato)
+            {
+                using (Stream resource = typeof(Jj2StandaloneServer).Assembly.GetManifestResourceStream("Jj2.HotPotatoHud"))
+                {
+                    if (resource == null) throw new InvalidDataException("The bundled Hot Potato HUD module is missing.");
+                    using (MemoryStream script = new MemoryStream())
+                    {
+                        resource.CopyTo(script);
+                        assets.Add(Jj2ServerPackets.HotPotatoModule, script.ToArray());
+                    }
+                }
+            }
         }
 
         static byte[] ReadAsset(string path, string name)
@@ -165,7 +180,8 @@ namespace Jj2
             udpThread.Start();
             log("Standalone TCP/UDP server listening on port " + Port + ": " + options.ServerName);
             log("Map: " + levelName + ". Sandbox: movement, chat, downloads and visual blaster relay.");
-            log("No authoritative combat, pickups, CTF scoring, scripts or public-list registration.");
+            log("No authoritative combat, pickups, CTF scoring, arbitrary map scripts or public-list registration.");
+            if (IsHotPotato) log("Bundled Hot Potato HUD downloads automatically to native JJ2+ clients.");
             log(ModeStatus);
         }
 
@@ -264,7 +280,7 @@ namespace Jj2
         {
             int p = packet[0] == 0 ? 4 : 2;
             byte opcode = packet[p - 1];
-            if (TracePackets) log("TCP 0x" + opcode.ToString("X2") + " (" + packet.Length + " bytes).");
+            if (TracePackets) log("TCP " + BitConverter.ToString(packet, 0, Math.Min(packet.Length, 64)));
             if (peer.Udp == null && opcode != 0x0F)
                 throw new InvalidDataException("A join request must be the first packet.");
             switch (opcode)
@@ -286,7 +302,9 @@ namespace Jj2
                         writer.Write(BitConverter.ToUInt32(level, 226)); writer.Write(BitConverter.ToUInt32(tileset, 226));
                         writer.Write((byte)2); writer.Write((byte)10);
                         writer.Write(peer.Challenge);
-                        writer.Write(new byte[] { 6, 0, 6, 0, 1, 0xCA, 0xB7, 0xDB, 0xF4, 0, 0xD8, 0x43, 0x5A, 0x0E, 1 });
+                        writer.Write(new byte[] { 6, 0, 6, 0, 1, 0xCA, 0xB7, 0xDB, 0xF4 });
+                        writer.Write(IsHotPotato ? new byte[] { 2, 1, 0, 0, 0, 1 }
+                            : new byte[] { 0, 0xD8, 0x43, 0x5A, 0x0E, 1 });
                         Send(peer, Jj2ServerPackets.Tcp(0x10, body.ToArray()));
                     }
                     break;
@@ -294,7 +312,20 @@ namespace Jj2
                     if (packet.Length - p != 6 || peer.Record != null)
                         throw new InvalidDataException("Invalid JJ2+ negotiation.");
                     peer.Plus = true;
-                    Send(peer, Jj2ServerPackets.Tcp(0x3F, new byte[] { 6, 0, 6, 0, 0, 0, 0, 0x80, 7 }));
+                    Send(peer, Jj2ServerPackets.Tcp(0x3F, new byte[] { 6, 0, 6, 0, 0, 0, 0,
+                        IsHotPotato ? (byte)0x81 : (byte)0x80, IsHotPotato ? (byte)6 : (byte)7 }));
+                    if (IsHotPotato)
+                        Send(peer, Jj2ServerPackets.ScriptList(peer.Challenge, assets[Jj2ServerPackets.HotPotatoModule]));
+                    break;
+                case 0x57:
+                    if (!IsHotPotato || packet.Length - p != 2 || packet[p] != 1 || packet[p + 1] != 1)
+                        throw new InvalidDataException("Invalid Hot Potato HUD acknowledgement.");
+                    lock (gameSync)
+                    {
+                        peer.HudReady = true;
+                        log("Hot Potato HUD initialized for player " + peer.Id + ".");
+                        SendHud(peer);
+                    }
                     break;
                 case 0x0E:
                     ReceiveIdentity(peer, packet, p);
@@ -302,6 +333,7 @@ namespace Jj2
                 case 0x1A:
                     if (peer.Record == null || packet.Length - p != 4 || !Equal(packet, p, peer.Challenge, 0, 4))
                         throw new InvalidDataException("Invalid ready challenge.");
+                    peer.ReadyTime = GameTime;
                     peer.Ready = true;
                     peer.Tcp.ReceiveTimeout = 0;
                     // Captured JJ2+ session settings and the end-of-object-state marker
@@ -315,7 +347,7 @@ namespace Jj2
                     // The early initialization marker permits map loading; the post-load
                     // acknowledgement is also required before native players can spawn.
                     Send(peer, Jj2ServerPackets.Tcp(0x51, new byte[0]));
-                    Send(peer, Jj2ServerPackets.Console("Standalone sandbox: no damage, pickups, CTF scoring or scripts."));
+                    Send(peer, Jj2ServerPackets.Console("Standalone sandbox: no damage, pickups, CTF scoring or arbitrary map scripts."));
                     if (IsHotPotato)
                     {
                         lock (gameSync)
@@ -326,13 +358,16 @@ namespace Jj2
                                 SetSpectator(peer, true);
                             }
                             Send(peer, Jj2ServerPackets.Console(ModeStatus));
+                            SendHud(peer);
                         }
                     }
                     break;
                 case 0x15:
-                    if (peer.Record == null || packet.Length - p < 2 || packet[p] != packet.Length - p - 1 ||
+                    if (packet.Length - p < 2 || packet[p] != packet.Length - p - 1 ||
                         ++peer.Requests > 4) throw new InvalidDataException("Invalid or excessive file request.");
                     string requested = Encoding.ASCII.GetString(packet, p + 1, packet[p]);
+                    if (peer.Record == null && (!IsHotPotato || requested != Jj2ServerPackets.HotPotatoModule))
+                        throw new InvalidDataException("Only the advertised HUD module may be requested before player identity.");
                     byte[] data;
                     if (!assets.TryGetValue(requested, out data)) throw new InvalidDataException("File is not part of this server's map.");
                     SendAsset(peer, requested, data);
@@ -596,6 +631,11 @@ namespace Jj2
 
         void RefreshMarkers()
         {
+            byte[] hud = IsHotPotato
+                ? Jj2ServerPackets.HotPotatoHud(hotPotato.Holder, hotPotato.Deadline - GameTime) : null;
+            if (hud != null)
+                foreach (Peer destination in Snapshot())
+                    if (destination.Ready && destination.HudReady) TrySend(destination, hud);
             foreach (Peer source in Snapshot())
             {
                 byte[] position = source.Position;
@@ -604,6 +644,12 @@ namespace Jj2
                 foreach (Peer destination in Snapshot())
                     if ((destination != source || (IsHotPotato && Spawned(position))) && destination.Ready) SendUdp(destination, packet);
             }
+        }
+
+        void SendHud(Peer peer)
+        {
+            if (IsHotPotato && peer.Ready && peer.HudReady)
+                TrySend(peer, Jj2ServerPackets.HotPotatoHud(hotPotato.Holder, hotPotato.Deadline - GameTime));
         }
 
         static bool Spawned(byte[] position)
@@ -759,6 +805,13 @@ namespace Jj2
                     }
             foreach (Peer peer in Snapshot())
             {
+                if (IsHotPotato && peer.Ready && !peer.HudReady && !peer.HudWarning && GameTime - peer.ReadyTime > 3)
+                {
+                    peer.HudWarning = true;
+                    string warning = "Hot Potato HUD did not initialize. Native JJ2+ clients must allow the bundled script download.";
+                    log("Player " + peer.Id + ": " + warning);
+                    TrySend(peer, Jj2ServerPackets.Console(warning));
+                }
                 if ((!peer.Ready && (lastPulse - peer.Accepted).TotalSeconds > 30) ||
                     (lastPulse - new DateTime(Interlocked.Read(ref peer.LastActivityTicks))).TotalSeconds > 60)
                 {

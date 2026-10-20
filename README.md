@@ -54,11 +54,11 @@ a complete JJ2 server engine.** It implements native discovery, JJ2+ negotiation
 single-player joins (up to 31 clients), roster updates, chat, spectator toggles,
 validated map/tileset downloads, keepalives, movement relay and visual blaster
 event relay. TCP control and UDP gameplay are handled by our server sockets.
-Downloads expose only immutable snapshots of the selected level and its tileset;
-arbitrary file requests are rejected.
+Downloads expose only immutable snapshots of the selected level and its tileset,
+plus the bundled HUD module in Hot Potato mode; arbitrary file requests are rejected.
 
 There is **no authoritative combat/damage, pickup synchronization, CTF flags or
-scoring, AngelScript, level cycling, password authentication, splitscreen or
+scoring, arbitrary map scripts, level cycling, password authentication, splitscreen or
 public-list registration**. Unsupported packets/commands are reported. Do not
 treat visible projectiles as implemented combat. Use trusted LAN/VPN peers;
 this prototype is not intended as a production internet server. The application
@@ -86,9 +86,20 @@ not used to host the server.
 Choose **Hot Potato (15-second fuse)** in the hosting dialog. In the server
 window, **Start round** (or `/start`) requires at least two ready,
 non-spectating players and randomly selects the holder. The server announces
-each holder and the remaining fuse. The native Sugar Rush visual marks the
-holder using JJ2+'s existing UDP player-state packet, not an executable patch,
-AngelScript module or required mutator.
+each holder and the remaining fuse. Sugar Rush flashing/stars mark the holder,
+including your own player. The server automatically advertises and downloads
+the bundled `jj2bot_hotpotato_v1.mut` HUD module to native JJ2+ clients: no
+executable patch, manual installation or `/mutators` command is needed.
+JJ2+ script downloads must be allowed.
+
+The module uses `onPlayerDraw` for the visual-only Sugar Rush effect and the
+native **Player Timer** for the shared remaining fuse, not the private Sugar Rush
+powerup timer. The clock continues across transfers, refreshes from authoritative
+server state four times per second, and stops on reset/round end. Stale HUD state
+clears after two seconds without an update. The module does not grant Sugar Rush
+powers or decide eliminations. This application's bot client does not execute
+AngelScript; it still receives holder announcements and round/spectator updates,
+but not this native HUD.
 
 - A player within **32 pixels** of the holder receives the potato. Positions
   must be no more than **one second old**. The nearest eligible player wins
@@ -125,9 +136,13 @@ Protocol evidence: a controlled native JJ2+ reference server produced
 while its host had Sugar Rush. In a single-player `0x02` update, the status
 byte at offset 7 has bit `0x02` set. Hot Potato rewrites only that bit and the
 UDP checksum/sequence. Clearing it on transfer removes the old remote-player
-marker and gives the next player the native flashing/star effect. Holder and
-remaining-fuse announcements also identify the potato to its local carrier;
-this replicated status is not a native local Sugar Rush timer/HUD.
+marker and gives the next player the native flashing/star effect. That replicated
+bit alone does not provide local stars or an authoritative countdown, so Hot
+Potato additionally advertises its immutable module with TCP `0x5A`, serves it
+over the existing `0x14` file transport, and sends versioned holder/fuse updates
+using the native script stream (`0x56`, module ID 1). A `0x57` readiness message
+confirms that the client's module actually initialized; missing acknowledgements
+produce an explicit HUD warning without changing the round rules.
 Leaving spectating also sends the native self-respawn event (`0x07` batch
 containing `0x0F, player ID, player ID`) and refreshes that player's `0x12`
 roster record; merely clearing the spectator bit would

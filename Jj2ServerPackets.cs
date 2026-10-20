@@ -137,6 +137,34 @@ namespace Jj2
             return packet;
         }
 
+        public const string HotPotatoModule = "jj2bot_hotpotato_v1.mut";
+
+        public static byte[] ScriptList(byte[] challenge, byte[] script)
+        {
+            using (MemoryStream body = new MemoryStream())
+            using (BinaryWriter writer = new BinaryWriter(body))
+            {
+                writer.Write(challenge, 0, 4);
+                writer.Write((byte)2);
+                writer.Write((byte)1);
+                writer.Write((ushort)0);
+                writer.Write((byte)0);
+                writer.Write((byte)0);
+                writer.Write(JjAssetDownload.Crc32(script));
+                byte[] name = Encoding.ASCII.GetBytes(HotPotatoModule);
+                writer.Write((byte)name.Length);
+                writer.Write(name);
+                return Tcp(0x5A, body.ToArray());
+            }
+        }
+
+        public static byte[] HotPotatoHud(byte? holder, double secondsLeft)
+        {
+            ushort ticks = holder.HasValue
+                ? (ushort)Math.Max(0, Math.Min(1050, Math.Ceiling(secondsLeft * 70))) : (ushort)0;
+            return Tcp(0x56, new byte[] { 1, 1, holder ?? (byte)255, (byte)ticks, (byte)(ticks >> 8) });
+        }
+
         public static byte[] Spectator(byte socketId, bool enabled)
         {
             return Tcp(0x41, new byte[] { 1, 0, socketId, enabled ? socketId : (byte)0xFE });

@@ -217,14 +217,19 @@ namespace Jj2
                 return false;
             uint embedded = BitConverter.ToUInt32(data, 226);
             if (expected != 0 && embedded != expected) return false;
+            return Crc32(data, 262) == embedded;
+        }
+
+        internal static uint Crc32(byte[] data, int offset = 0)
+        {
             uint crc = 0xFFFFFFFF;
-            for (int i = 262; i < data.Length; i++)
+            for (int i = offset; i < data.Length; i++)
             {
                 crc ^= data[i];
                 for (int bit = 0; bit < 8; bit++)
                     crc = (crc >> 1) ^ ((crc & 1) != 0 ? 0xEDB88320u : 0);
             }
-            return ~crc == embedded;
+            return ~crc;
         }
 
         void Fail(string reason)

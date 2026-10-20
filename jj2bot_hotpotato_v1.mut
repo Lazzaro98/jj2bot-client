@@ -1,0 +1,57 @@
+uint8 potatoHolder = 255;
+uint16 potatoTicks = 0;
+uint potatoStateTick = 0;
+bool potatoSynchronized = false;
+array<bool> potatoTimerOwned(4, false);
+
+void onLevelBegin() {
+    jjSTREAM ready;
+    ready.push(uint8(1));
+    jjSendPacket(ready);
+}
+
+void onReceive(jjSTREAM &in packet, int fromClientID) {
+    uint8 version, holder;
+    uint16 ticks;
+    if (fromClientID != 0 || packet.getSize() != 4 ||
+        !packet.pop(version) || !packet.pop(holder) || !packet.pop(ticks) ||
+        version != 1 || (holder != 255 && holder >= 32) || ticks > 1050) {
+        jjDebug("Ignored an invalid Hot Potato HUD state.");
+        return;
+    }
+    potatoHolder = holder;
+    potatoTicks = ticks;
+    potatoStateTick = jjGameTicks;
+    potatoSynchronized = true;
+}
+
+int potatoTimeLeft() {
+    uint elapsed = jjGameTicks - potatoStateTick;
+    if (!potatoSynchronized || potatoHolder == 255 || elapsed > 140)
+        return 0;
+    return elapsed < potatoTicks ? int(potatoTicks - elapsed) : 0;
+}
+
+void potatoTimerEnd(jjPLAYER@ player) {
+    // Only the server decides elimination, never a local HUD timer.
+}
+
+void onPlayer(jjPLAYER@ player) {
+    int timeLeft = potatoTimeLeft();
+    uint localID = player.localPlayerID;
+    if (timeLeft > 0) {
+        if (!potatoTimerOwned[localID]) {
+            player.timerFunction("potatoTimerEnd");
+            player.timerStart(timeLeft);
+            potatoTimerOwned[localID] = true;
+        }
+        player.timerTime = timeLeft;
+    } else if (potatoTimerOwned[localID]) {
+        player.timerStop();
+        potatoTimerOwned[localID] = false;
+    }
+}
+
+void onPlayerDraw(jjPLAYERDRAW &inout draw) {
+    draw.sugarRush = potatoTimeLeft() > 0 && uint(draw.player.playerID) == uint(potatoHolder);
+}

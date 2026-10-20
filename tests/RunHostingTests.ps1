@@ -15,6 +15,7 @@ $sources += @(Get-ChildItem -LiteralPath (Join-Path $root 'Properties') -Filter 
     ForEach-Object { $_.FullName })
 try {
     & $compiler /nologo "/out:$output" /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Configuration.dll `
+        "/resource:$(Join-Path $root 'jj2bot_hotpotato_v1.mut'),Jj2.HotPotatoHud" `
         $sources (Join-Path $PSScriptRoot 'StandaloneServerTests.cs') (Join-Path $PSScriptRoot 'StandaloneInteropTests.cs') `
         (Join-Path $PSScriptRoot 'HotPotatoTests.cs')
     if ($LASTEXITCODE -ne 0) { throw 'Hosting test compilation failed.' }

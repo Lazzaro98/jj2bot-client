@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -129,6 +130,29 @@ static class HotPotatoTests
         Assert(states.Length == 19 && BitConverter.ToUInt32(states, 5) == (1u << 31 | 6) &&
             BitConverter.ToUInt32(states, 10) == 4 && BitConverter.ToUInt32(states, 15) == 6,
             "dynamic native client masks/31st slot");
+        byte[] manifest = Jj2ServerPackets.ScriptList(new byte[] { 1, 2, 3, 4 }, new byte[] { 1, 2, 3 });
+        Assert(manifest[0] == manifest.Length && manifest[1] == 0x5A &&
+            manifest[2] == 1 && manifest[3] == 2 && manifest[4] == 3 && manifest[5] == 4,
+            "native script manifest framing and challenge");
+        Assert(manifest[6] == 2 && manifest[7] == 1 && manifest[8] == 0 &&
+            manifest[9] == 0 && manifest[10] == 0 && manifest[11] == 0,
+            "manifest advertises one module, no dependencies and native reserved byte");
+        Assert(BitConverter.ToUInt32(manifest, 12) == 0x55BC801Du &&
+            manifest[16] == Jj2ServerPackets.HotPotatoModule.Length &&
+            System.Text.Encoding.ASCII.GetString(manifest, 17, manifest[16]) == Jj2ServerPackets.HotPotatoModule &&
+            manifest.Length == 17 + manifest[16], "manifest full-file CRC and exact whitelisted filename");
+        Assert(JjAssetDownload.Crc32(System.Text.Encoding.ASCII.GetBytes("123456789")) == 0xCBF43926u,
+            "script CRC uses standard whole-file IEEE CRC32");
+        byte[] hud = Jj2ServerPackets.HotPotatoHud(4, 12.001);
+        Assert(hud.Length == 7 && hud[1] == 0x56 && hud[2] == 1 && hud[3] == 1 &&
+            hud[4] == 4 && BitConverter.ToUInt16(hud, 5) == 841,
+            "script stream addresses module one and rounds fractional ticks up");
+        Assert(BitConverter.ToUInt16(Jj2ServerPackets.HotPotatoHud(4, 20), 5) == 1050 &&
+            BitConverter.ToUInt16(Jj2ServerPackets.HotPotatoHud(4, -1), 5) == 0,
+            "script countdown clamps to the authoritative 15-second fuse");
+        hud = Jj2ServerPackets.HotPotatoHud(null, 15);
+        Assert(hud[4] == 255 && BitConverter.ToUInt16(hud, 5) == 0,
+            "inactive script state clears holder and countdown");
 
         List<string> logs = new List<string>();
         Action<string> log = delegate(string text) { lock (logs) logs.Add(text); };
@@ -142,6 +166,18 @@ static class HotPotatoTests
             using (StandaloneServerTests.Client a = new StandaloneServerTests.Client(server.Port, "Alpha"))
             using (StandaloneServerTests.Client b = new StandaloneServerTests.Client(server.Port, "Bravo"))
             {
+                byte[] module = StandaloneServerTests.Download(a, Jj2ServerPackets.HotPotatoModule);
+                using (Stream resource = typeof(Jj2StandaloneServer).Assembly.GetManifestResourceStream("Jj2.HotPotatoHud"))
+                using (MemoryStream bundled = new MemoryStream())
+                {
+                    resource.CopyTo(bundled);
+                    Assert(Convert.ToBase64String(module) == Convert.ToBase64String(bundled.ToArray()),
+                        "bundled HUD downloads intact through the native whitelisted file transport");
+                }
+                a.Send(Jj2ServerPackets.Tcp(0x57, new byte[] { 1, 1 }));
+                hud = a.Until(0x56);
+                Assert(hud[4] == 255 && BitConverter.ToUInt16(hud, 5) == 0,
+                    "initialized client immediately receives inactive HUD state");
                 server.ExecuteAdmin("announcement-check");
                 string announcement = System.Text.Encoding.ASCII.GetString(a.Until(0x40));
                 if (!announcement.Contains("announcement-check"))
@@ -150,6 +186,9 @@ static class HotPotatoTests
                 Move(a, 1, 100); Move(b, 1, 500);
                 server.ExecuteAdmin("/start");
                 Assert(server.ModeStatus.Contains("Alpha"), "local admin did not start round");
+                do { hud = a.Until(0x56); } while (hud[4] != a.Id);
+                int initialTicks = BitConverter.ToUInt16(hud, 5);
+                Assert(initialTicks > 980 && initialTicks <= 1050, "round start publishes the holder and current native fuse");
                 a.Send(Jj2TcpPackets.CreateChatMessage(a.Id, "/start"));
                 string response;
                 do { response = System.Text.Encoding.ASCII.GetString(a.Until(0x40)); }
@@ -161,6 +200,10 @@ static class HotPotatoTests
                 Thread.Sleep(1050);
                 Move(a, 2, 100); Move(b, 2, 120);
                 Wait(delegate { return server.ModeStatus.Contains("Bravo"); }, "real-socket proximity pass failed");
+                do { hud = a.Until(0x56); } while (hud[4] != b.Id);
+                Assert(BitConverter.ToUInt16(hud, 5) > 0 &&
+                    BitConverter.ToUInt16(hud, 5) <= initialTicks - 70,
+                    "HUD transfer keeps the original countdown instead of restarting at 15 seconds");
                 using (StandaloneServerTests.Client late = new StandaloneServerTests.Client(server.Port, "Late"))
                 {
                     byte[] spec = late.Until(0x41);
@@ -177,6 +220,8 @@ static class HotPotatoTests
                     Assert(server.PlayerCount == 3, "unsupported native spectator control disconnected a client");
                     server.ExecuteAdmin("/reset");
                     Wait(delegate { return server.ModeStatus.Contains("ready"); }, "admin reset did not reset engine");
+                    do { hud = a.Until(0x56); } while (hud[4] != 255);
+                    Assert(BitConverter.ToUInt16(hud, 5) == 0, "admin reset explicitly clears the native countdown");
                     server.ExecuteAdmin("/start");
                     Assert(server.ModeStatus.Contains("3 remaining"), "new round did not restore waiting players");
                 }

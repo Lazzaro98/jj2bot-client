@@ -77,9 +77,9 @@ namespace Jj2
                 Location = new Point(430, 232), Width = 122 };
             Controls.Add(playersBox);
 
-            Label notice = AddLabel("Standalone JJ2+ server. Hot Potato: proximity passes, Sugar Rush marker,\n" +
-                "elimination to spectator, last player wins. Start rounds in the server window.\n" +
-                "Battle combat, pickups, CTF scoring, scripts and public listing are not implemented.\n" +
+            Label notice = AddLabel("Hot Potato: proximity passes, Sugar Rush stars and a native countdown.\n" +
+                "JJ2+ HUD downloads automatically. Start rounds in the server window.\n" +
+                "Combat, pickups, CTF, arbitrary map scripts and public listing are not implemented.\n" +
                 "Use trusted LAN/VPN peers: passwords are not supported.\n" +
                 "Allow the TCP + UDP port in your firewall. No Jazz2.exe is started.", 18, 278);
             notice.Font = Jj2Theme.FontSmall;

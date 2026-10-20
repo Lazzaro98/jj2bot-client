@@ -248,6 +248,8 @@ static class StandaloneInteropTests
                 return position != null && (BitConverter.ToUInt16(position, 10) & 0x7FFF) > 0;
             }, "Native Hot Potato client did not spawn.", 20);
             byte nativeId = (byte)nativePeer.GetType().GetField("Id").GetValue(nativePeer);
+            Wait(delegate { return (bool)nativePeer.GetType().GetField("HudReady").GetValue(nativePeer); },
+                "Native Hot Potato HUD module did not initialize.", 8);
             HotPotatoRound round = (HotPotatoRound)typeof(Jj2StandaloneServer)
                 .GetField("hotPotato", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(server);
             server.ExecuteAdmin("/start");
@@ -304,12 +306,22 @@ static class StandaloneInteropTests
             frames.Restart();
             while (frames.ElapsedMilliseconds < 600) { Application.DoEvents(); Thread.Sleep(15); }
             CaptureNative(native, "native-hotpotato-restarted");
+            nativePeer.GetType().GetField("HudReady").SetValue(nativePeer, false);
+            frames.Restart();
+            while (frames.ElapsedMilliseconds < 3200) { Application.DoEvents(); Thread.Sleep(15); }
+            CaptureNative(native, "native-hotpotato-stale-hud");
+            if (!round.Running || round.Holder != nativeId || round.RemainingPlayers != 3)
+                throw new Exception("Losing HUD updates changed authoritative round state.");
+            nativePeer.GetType().GetField("HudReady").SetValue(nativePeer, true);
             server.ExecuteAdmin("/reset");
+            frames.Restart();
+            while (frames.ElapsedMilliseconds < 400) { Application.DoEvents(); Thread.Sleep(15); }
+            CaptureNative(native, "native-hotpotato-reset-hud");
             if (round.Running || round.Holder.HasValue) throw new Exception("Native round reset failed.");
             if (native.HasExited) throw new Exception("Native Hot Potato client disconnected unexpectedly.");
             foreach (RemotePlayer player in alpha.GetRemotePlayers())
                 if (player.Key == alpha.Tcp.MyPlayerId) throw new Exception("Self marker created a duplicate bot avatar.");
-            Console.WriteLine("PASS: native JJ2+ Hot Potato holder announcements, proximity transfer without fuse reset, two expiries, forced spectator, winner and restart. Visual captures saved beside test runner for remote-marker inspection.");
+            Console.WriteLine("PASS: native JJ2+ Hot Potato HUD initialization, holder announcements, proximity transfer without fuse reset, two expiries, forced spectator, winner, restart and HUD loss without client-side elimination. Visual captures saved beside test runner for local/remote stars, native countdown and stale/reset HUD inspection.");
         }
         finally
         {

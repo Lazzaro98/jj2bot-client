@@ -110,7 +110,7 @@ class StandaloneServerTests
         }
     }
 
-    static byte[] Download(Client client, string name)
+    internal static byte[] Download(Client client, string name)
     {
         byte[] filename = Encoding.ASCII.GetBytes(name);
         byte[] request = new byte[filename.Length + 1];
